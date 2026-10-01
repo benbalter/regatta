@@ -9,7 +9,10 @@
     "build:openapi": "tsx scripts/build-openapi.ts",
     "build:client": "npx --yes openapi-typescript@7.13.0 public/openapi.json -o src/client/schema.d.ts",
     "build:api": "npm run build:openapi && npm run build:client",
-    "lint:spec": "redocly lint public/openapi.json"
+    "lint:spec": "redocly lint public/openapi.json",
+    "build:web": "astro build",
+    "dev:web": "astro dev",
+    "check": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json && vitest run && npm run lint:spec"
   },
   "keywords": [],
   "author": "",
@@ -19,7 +22,13 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.22.0",
     "@redocly/cli": "2.57.0",
+    "@tailwindcss/cli": "4.3.3",
+    "@tailwindcss/vite": "4.3.3",
     "@types/node": "26.6.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "esbuild": "0.28.2",
+    "tailwindcss": "4.3.3",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vitest": "4.1.11",
@@ -27,15 +36,25 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.131.0",
+    "@astrojs/react": "7.0.0",
+    "@cloudflare/kumo": "2.14.0",
     "@cloudflare/sandbox": "1.0.0",
     "@hono/zod-openapi": "1.6.3",
+    "@phosphor-icons/react": "2.1.10",
+    "agents": "0.24.0",
+    "astro": "7.3.5",
+    "diff2html": "3.4.56",
+    "dompurify": "3.4.16",
     "hono": "4.13.12",
     "openapi-fetch": "0.17.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "zod": "4.6.5"
   },
   "allowScripts": {
     "esbuild@0.28.1": true,
     "workerd@1.20260815.1": true,
-    "workerd@1.20260930.2": true
+    "workerd@1.20260930.2": true,
+    "esbuild@0.28.2": true
   }
 }

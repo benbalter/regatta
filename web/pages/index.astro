@@ -1,0 +1,45 @@
+---
+import Dashboard from "../components/Dashboard";
+import "../styles/global.css";
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Regatta</title>
+    <meta
+      name="description"
+      content="Races, not pull requests: one intent across many repos as competing agent forks that share fixes, reviewed once per outcome cluster."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,800;1,9..144,400&family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <script is:inline>
+      // Resolve the color mode before first paint (no flash). The preference is
+      // auto | light | dark; data-mode is always light or dark, which is what
+      // Kumo's components and Regatta's tokens both key on.
+      (() => {
+        let pref = "auto";
+        try { pref = localStorage.getItem("regatta-theme") || "auto"; } catch {}
+        const dark = matchMedia("(prefers-color-scheme: dark)");
+        const apply = () => {
+          const p = document.documentElement.dataset.pref || pref;
+          document.documentElement.dataset.mode = p === "auto" ? (dark.matches ? "dark" : "light") : p;
+        };
+        document.documentElement.dataset.pref = pref;
+        apply();
+        dark.addEventListener("change", apply);
+      })();
+    </script>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body class="min-h-screen font-sans antialiased">
+    <main class="mx-auto max-w-[1400px] px-4 py-6 sm:px-6">
+      <Dashboard client:only="react" />
+    </main>
+  </body>
+</html>

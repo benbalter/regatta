@@ -5,9 +5,12 @@
   "compatibility_date": "2026-09-30",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // The Astro dashboard (dist/) is served as static assets. These paths run the Worker first.
+  "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": ["/api/*", "/agents/*", "/openapi.json"] },
+  "build": { "command": "npm run build:web" },
   "durable_objects": {
     "bindings": [
-      { "name": "RACE", "class_name": "Race" },
+      { "name": "Race", "class_name": "Race" },
       { "name": "SANDBOX", "class_name": "Sandbox" }
     ]
   },
@@ -50,7 +53,7 @@
       "artifacts": [{ "binding": "ARTIFACTS", "namespace": "regatta" }],
       "durable_objects": {
         "bindings": [
-          { "name": "RACE", "class_name": "Race" },
+          { "name": "Race", "class_name": "Race" },
           { "name": "SANDBOX", "class_name": "Sandbox" }
         ]
       },

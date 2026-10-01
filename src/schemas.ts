@@ -241,3 +241,14 @@ export type Announcement = z.infer<typeof Announcement>;
 export type ClaimConflict = z.infer<typeof ClaimConflict>;
 export type FeedEvent = z.infer<typeof FeedEvent>;
 export type DecisionDoc = z.infer<typeof DecisionDoc>;
+
+/**
+ * What dashboards receive over WebSocket (Agents SDK state sync). Small on
+ * purpose: a version that bumps on every change plus the feed tail; clients
+ * refetch the full race over HTTP when the version moves.
+ */
+export interface RaceLiveState {
+  version: number;
+  updatedAt: string | null;
+  feed: FeedEvent[];
+}

@@ -25,7 +25,7 @@ export class SyncWorkflow extends WorkflowEntrypoint<Env, SyncParams> {
   async run(event: WorkflowEvent<SyncParams>, step: WorkflowStep) {
     const p = event.payload;
     const host = repoHost(this.env);
-    const race = this.env.RACE.getByName(p.raceId);
+    const race = this.env.Race.getByName(p.raceId);
     const sandbox = sandboxFor(this.env, `sync-${p.base}`);
     let status: SyncStatus = "failed";
     let detail = "";

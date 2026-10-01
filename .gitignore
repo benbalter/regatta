@@ -5,3 +5,5 @@ node_modules/
 .env
 .env.*
 !.env.op
+dist/
+.astro/

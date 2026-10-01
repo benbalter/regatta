@@ -35,7 +35,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
   async run(event: WorkflowEvent<AttemptParams>, step: WorkflowStep) {
     const p = event.payload;
     const host = repoHost(this.env);
-    const race = this.env.RACE.getByName(p.raceId);
+    const race = this.env.Race.getByName(p.raceId);
     const sandbox = sandboxFor(this.env, p.attemptId);
 
     try {
@@ -153,7 +153,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
     p: AttemptParams,
     step: WorkflowStep,
     sandbox: ReturnType<typeof sandboxFor>,
-    race: ReturnType<Env["RACE"]["getByName"]>,
+    race: ReturnType<Env["Race"]["getByName"]>,
   ) {
     const model = parseModel(this.env.REGATTA_AGENT_MODEL);
     const system = systemPrompt(p.check);
@@ -222,7 +222,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
     call: Anthropic.Beta.BetaToolUseBlock,
     p: AttemptParams,
     sandbox: ReturnType<typeof sandboxFor>,
-    race: ReturnType<Env["RACE"]["getByName"]>,
+    race: ReturnType<Env["Race"]["getByName"]>,
   ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
     const input = call.input as Record<string, string>;
     const done = (content: string, isError = false): Anthropic.Beta.BetaToolResultBlockParam => ({
@@ -278,7 +278,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
   // Runs the check. When a check passes after an earlier failure, the diff
   // between the two states is this agent's fix, so post it to the race
   // blackboard for every other agent.
-  private async check(p: AttemptParams, sandbox: ReturnType<typeof sandboxFor>, race: ReturnType<Env["RACE"]["getByName"]>) {
+  private async check(p: AttemptParams, sandbox: ReturnType<typeof sandboxFor>, race: ReturnType<Env["Race"]["getByName"]>) {
     const r = await sandbox.sh(p.check, { timeoutSeconds: 900 });
     const output = (r.stdout + r.stderr).slice(-6000);
     const stateFile = "/workspace/.regatta-last-failure";

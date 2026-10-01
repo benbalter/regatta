@@ -26,7 +26,7 @@ export class LandWorkflow extends WorkflowEntrypoint<Env, LandParams> {
   async run(event: WorkflowEvent<LandParams>, step: WorkflowStep) {
     const p = event.payload;
     const host = repoHost(this.env);
-    const race = this.env.RACE.getByName(p.raceId);
+    const race = this.env.Race.getByName(p.raceId);
     const sandbox = sandboxFor(this.env, `land-${p.attemptId}`);
     try {
       const halt = await step.do("gate", async () => {

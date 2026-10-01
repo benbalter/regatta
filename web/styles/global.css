@@ -1,0 +1,71 @@
+/* Tailwind via @tailwindcss/vite at build time: no runtime CDN script. */
+@import "tailwindcss";
+@import "diff2html/bundles/css/diff2html.min.css";
+
+@source "../";
+
+/* Theme tokens. Light and dark swap these variables, so no dark: variants are needed. */
+:root {
+  --paper: #f4f1e8;
+  --card: #fbf9f3;
+  --ink: #14213d;
+  --muted: #5b6478;
+  --rule: #d8d2c2;
+  --grid: rgba(20, 33, 61, 0.05);
+  --flag-red: #c8102e;
+  --flag-yellow: #c99700;
+  --flag-blue: #0b4f9c;
+  --flag-green: #1f7a4d;
+  /* Kumo draws white text on its brand color, so this stays deep in both modes. */
+  --brand: #14213d;
+  color-scheme: light;
+}
+/* Dark mode: <html data-mode="dark">, the same switch Kumo uses, so Regatta's
+   tokens and Kumo's components always flip together. "Auto" is resolved from
+   prefers-color-scheme by the inline script in index.astro. */
+:root[data-mode="dark"] {
+  --paper: #0b1426;
+  --card: #111d35;
+  --ink: #e8e4d8;
+  --muted: #93a0b8;
+  --rule: #26355a;
+  --grid: rgba(232, 228, 216, 0.04);
+  --flag-red: #ff5a6e;
+  --flag-yellow: #f2c14e;
+  --flag-blue: #6aa7ff;
+  --flag-green: #4fc28a;
+  --brand: #1a3a73;
+  color-scheme: dark;
+}
+
+@theme {
+  --font-display: "Fraunces", Georgia, serif;
+  --font-sans: "Instrument Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --color-paper: var(--paper);
+  --color-card: var(--card);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-rule: var(--rule);
+  /* International Code of Signals flag colors are the status language. */
+  --color-flag-red: var(--flag-red);
+  --color-flag-yellow: var(--flag-yellow);
+  --color-flag-blue: var(--flag-blue);
+  --color-flag-green: var(--flag-green);
+}
+
+body {
+  background-color: var(--paper);
+  /* Nautical chart grid. */
+  background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+  color: var(--ink);
+}
+
+/* diff2html assumes a white page; let it sit on the card in either theme. */
+.d2h-wrapper .d2h-file-wrapper { border-color: var(--rule); border-radius: 0.5rem; overflow: hidden; }
+.d2h-wrapper .d2h-file-header { background: var(--card); border-color: var(--rule); }
+
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise 0.35s ease-out both; }
+@media (prefers-reduced-motion: reduce) { .rise { animation: none; } }

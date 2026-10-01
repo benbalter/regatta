@@ -1,5 +1,5 @@
+import { routeAgentRequest } from "agents";
 import { app, getOpenAPISpec } from "./api";
-import { UI } from "./ui";
 
 export { Race } from "./race";
 export { Sandbox, Egress } from "./sandbox";
@@ -8,8 +8,13 @@ export { LandWorkflow } from "./land";
 export { SyncWorkflow } from "./sync";
 export { DecisionWorkflow } from "./decision-workflow";
 
-app.get("/", (c) => c.html(UI));
 // The contract, live. scripts/build-openapi.ts writes the same document to public/openapi.json.
 app.get("/openapi.json", (c) => c.json(getOpenAPISpec()));
 
-export default app;
+// Dashboards subscribe to a race at /agents/race/<id> (Agents SDK state sync,
+// read-only); everything else is the API. Static assets are served before this.
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return (await routeAgentRequest(request, env)) ?? app.fetch(request, env, ctx);
+  },
+} satisfies ExportedHandler<Env>;

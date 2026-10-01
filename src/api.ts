@@ -51,7 +51,7 @@ const admin: RouteConfig["security"] = [{ admin: [] }];
 const open: RouteConfig["security"] = [];
 const optionalAdmin: RouteConfig["security"] = [{}, { admin: [] }];
 const RaceId = z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "cmuptjeil" }) });
-const index = (env: Env) => env.RACE.getByName("_index");
+const index = (env: Env) => env.Race.getByName("_index");
 
 app.use("/api/*", async (c, next) => (c.req.method === "GET" ? next() : requireAdmin(c, next)));
 
@@ -84,7 +84,7 @@ app.openapi(
   async (c) => {
     const spec = c.req.valid("json");
     const id = `c${Date.now().toString(36)}`;
-    await c.env.RACE.getByName(id).start(id, spec);
+    await c.env.Race.getByName(id).start(id, spec);
     await index(c.env).register(id, spec.intent);
     return c.json({ id }, 201);
   },
@@ -102,7 +102,7 @@ app.openapi(
     responses: { 200: json(S.RaceView, "The race"), 404: json(S.ApiError, "No such race") },
   }),
   async (c) => {
-    const view = await c.env.RACE.getByName(c.req.valid("param").id).view();
+    const view = await c.env.Race.getByName(c.req.valid("param").id).view();
     if (!view) return c.json({ error: "no such race" }, 404);
     return c.json(view, 200);
   },
@@ -123,7 +123,7 @@ app.openapi(
   async (c) => {
     const body = c.req.valid("json");
     try {
-      const landing = await c.env.RACE.getByName(c.req.valid("param").id).approve(body.key, {
+      const landing = await c.env.Race.getByName(c.req.valid("param").id).approve(body.key, {
         overrides: body.overrides,
         approvedBy: body.approvedBy?.trim() || "a human reviewer",
         dissentResponse: body.dissentResponse,
@@ -149,7 +149,7 @@ app.openapi(
   }),
   async (c) => {
     try {
-      await c.env.RACE.getByName(c.req.valid("param").id).writeDecisionDocs();
+      await c.env.Race.getByName(c.req.valid("param").id).writeDecisionDocs();
       return c.json({ ok: true as const }, 202);
     } catch (e) {
       return c.json({ error: (e as Error).message }, 409);
@@ -171,7 +171,7 @@ app.openapi(
   }),
   async (c) => {
     const { reason, by } = c.req.valid("json");
-    await c.env.RACE.getByName(c.req.valid("param").id).halt({ by: by?.trim() || "a human", reason });
+    await c.env.Race.getByName(c.req.valid("param").id).halt({ by: by?.trim() || "a human", reason });
     return c.json({ ok: true as const }, 200);
   },
 );
@@ -189,7 +189,7 @@ app.openapi(
   }),
   async (c) => {
     const body = await c.req.json<{ by?: string }>().catch(() => ({ by: undefined }));
-    const relaunched = await c.env.RACE.getByName(c.req.valid("param").id).resume(body.by?.trim() || "a human");
+    const relaunched = await c.env.Race.getByName(c.req.valid("param").id).resume(body.by?.trim() || "a human");
     return c.json({ ok: true as const, relaunched }, 200);
   },
 );

@@ -12,7 +12,7 @@ export interface DecisionParams {
 
 export class DecisionWorkflow extends WorkflowEntrypoint<Env, DecisionParams> {
   async run(event: WorkflowEvent<DecisionParams>, step: WorkflowStep) {
-    const race = this.env.RACE.getByName(event.payload.raceId);
+    const race = this.env.Race.getByName(event.payload.raceId);
     const docModel = parseModel(this.env.REGATTA_AGENT_MODEL);
     const dissentModel = parseModel(this.env.REGATTA_DISSENT_MODEL);
 

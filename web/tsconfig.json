@@ -1,0 +1,9 @@
+{
+  "extends": "astro/tsconfigs/strict",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "noEmit": true
+  },
+  "include": ["./**/*", "../src/client/schema.d.ts", "../src/schemas.ts"]
+}

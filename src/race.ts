@@ -3,7 +3,7 @@
 // agents' shared blackboard: fixes posted by one attempt are handed to every
 // other attempt that hits the same failure.
 
-import { DurableObject } from "cloudflare:workers";
+import { Agent, type Connection, type ConnectionContext } from "agents";
 import type { AttemptParams } from "./attempt";
 import type { AttemptReport } from "./schemas";
 import { clusterOutcomes, defaultWinners, errorSignature } from "./cluster";
@@ -14,7 +14,7 @@ import { escalateForConflicts, overlapping, undeclared } from "./claims";
 
 // Types come from the API contract (src/schemas.ts) so spec and code can't drift.
 export type { AttemptRecord, AttemptState, ClusterView, Fix, Halt, RaceSpec, RaceView, TargetSpec } from "./schemas";
-import type { AttemptRecord, ClaimConflict, DecisionDoc, FeedEvent, Fix, Halt, RaceSpec, RaceView, SyncStatus, TargetSpec } from "./schemas";
+import type { AttemptRecord, ClaimConflict, DecisionDoc, FeedEvent, RaceLiveState, Fix, Halt, RaceSpec, RaceView, SyncStatus, TargetSpec } from "./schemas";
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
 // Base repos are shared across races so each target is imported once.
@@ -28,12 +28,20 @@ async function shortHash(s: string): Promise<string> {
 
 const isSettled = (attempts: AttemptRecord[]) => !attempts.some((a) => a.state === "running");
 
-export class Race extends DurableObject<Env> {
-  private sql = this.ctx.storage.sql;
+export class Race extends Agent<Env, RaceLiveState> {
+  initialState: RaceLiveState = { version: 0, updatedAt: null, feed: [] };
+
+  // Viewers watch; they never write. Every change goes through the
+  // authenticated API, so WebSocket clients can't push state.
+  shouldConnectionBeReadonly(_connection: Connection, _ctx: ConnectionContext): boolean {
+    return true;
+  }
+
+  private db = this.ctx.storage.sql;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.sql.exec(`
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS fixes (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
@@ -48,11 +56,11 @@ export class Race extends DurableObject<Env> {
   // --- index (only used on the instance named "_index") -------------------
 
   async register(id: string, intent: string): Promise<void> {
-    this.sql.exec("INSERT OR REPLACE INTO races VALUES (?, ?, ?)", id, intent, new Date().toISOString());
+    this.db.exec("INSERT OR REPLACE INTO races VALUES (?, ?, ?)", id, intent, new Date().toISOString());
   }
 
   async list(): Promise<Array<{ id: string; intent: string; createdAt: string }>> {
-    return this.sql
+    return this.db
       .exec<{ id: string; intent: string; created_at: string }>("SELECT * FROM races ORDER BY created_at DESC")
       .toArray()
       .map((r) => ({ id: r.id, intent: r.intent, createdAt: r.created_at }));
@@ -60,11 +68,11 @@ export class Race extends DurableObject<Env> {
 
   /** `why` answers are immutable per commit, so cache them by repo@sha:path:line. */
   async cachedWhy(key: string): Promise<string | null> {
-    return this.sql.exec<{ json: string }>("SELECT json FROM whys WHERE k = ?", key).toArray()[0]?.json ?? null;
+    return this.db.exec<{ json: string }>("SELECT json FROM whys WHERE k = ?", key).toArray()[0]?.json ?? null;
   }
 
   async storeWhy(key: string, json: string): Promise<void> {
-    this.sql.exec("INSERT OR REPLACE INTO whys VALUES (?, ?)", key, json);
+    this.db.exec("INSERT OR REPLACE INTO whys VALUES (?, ?)", key, json);
   }
 
   // --- the claim ledger (index instance) ------------------------------------
@@ -72,12 +80,12 @@ export class Race extends DurableObject<Env> {
   // files in the same repo find out before review instead of at merge time.
 
   async claim(c: { base: string; race: string; attempt: string; paths: string[]; plan: string }): Promise<ClaimConflict[]> {
-    this.sql.exec("INSERT OR REPLACE INTO claims VALUES (?, ?, ?, ?, 1)", c.attempt, c.base, c.race, JSON.stringify(c));
+    this.db.exec("INSERT OR REPLACE INTO claims VALUES (?, ?, ?, ?, 1)", c.attempt, c.base, c.race, JSON.stringify(c));
     return this.conflicts(c.base, c.race, c.paths);
   }
 
   async conflicts(base: string, race: string, paths: string[]): Promise<ClaimConflict[]> {
-    const rows = this.sql
+    const rows = this.db
       // active = 1: announced and still in play; active = 2: already landed.
       .exec<{ json: string; active: number }>("SELECT json, active FROM claims WHERE base = ? AND race != ? AND active > 0", base, race)
       .toArray()
@@ -88,13 +96,13 @@ export class Race extends DurableObject<Env> {
   }
 
   async releaseClaim(attempt: string): Promise<void> {
-    this.sql.exec("UPDATE claims SET active = 0 WHERE attempt = ?", attempt);
+    this.db.exec("UPDATE claims SET active = 0 WHERE attempt = ?", attempt);
   }
 
   // Landed work stays visible to other races: their overlapping change now
   // meets code that's already in the repo, which is more reason to look, not less.
   async landClaim(attempt: string): Promise<void> {
-    this.sql.exec("UPDATE claims SET active = 2 WHERE attempt = ?", attempt);
+    this.db.exec("UPDATE claims SET active = 2 WHERE attempt = ?", attempt);
   }
 
   // --- race lifecycle ---------------------------------------------------
@@ -196,18 +204,18 @@ export class Race extends DurableObject<Env> {
   /** Regenerate decision docs on demand (for example after changing the dissent model). */
   async writeDecisionDocs(): Promise<void> {
     if (!isSettled(this.attempts())) throw new Error("attempts are still running");
-    this.sql.exec("DELETE FROM docs");
+    this.db.exec("DELETE FROM docs");
     await this.maybeWriteDecisionDocs(true);
   }
 
   async storeDecision(doc: DecisionDoc): Promise<void> {
-    this.sql.exec("INSERT OR REPLACE INTO docs VALUES (?, ?)", doc.clusterKey, JSON.stringify(doc));
+    this.db.exec("INSERT OR REPLACE INTO docs VALUES (?, ?)", doc.clusterKey, JSON.stringify(doc));
     this.event("decision", `decision doc ready for "${doc.clusterKey.replace(/^\w+:/, "")}"${doc.dissent ? " (with a dissent to answer)" : ""}`, {});
   }
 
   private docs(): Record<string, DecisionDoc> {
     return Object.fromEntries(
-      this.sql.exec<{ cluster: string; json: string }>("SELECT cluster, json FROM docs").toArray().map((r) => [r.cluster, JSON.parse(r.json)]),
+      this.db.exec<{ cluster: string; json: string }>("SELECT cluster, json FROM docs").toArray().map((r) => [r.cluster, JSON.parse(r.json)]),
     );
   }
 
@@ -225,7 +233,7 @@ export class Race extends DurableObject<Env> {
     for (const c of conflicts) {
       this.event("conflict", `overlaps race ${c.race} on ${c.paths.join(", ")}: "${c.plan}"`, { target: rec.target, attempt: attemptId });
       // Tell the other race too, so neither side learns about it only at merge time.
-      await this.env.RACE.getByName(c.race).noteConflict(c.attempt, rec.target, `race ${raceId} announced overlapping work on ${c.paths.join(", ")}: "${plan}"`);
+      await this.env.Race.getByName(c.race).noteConflict(c.attempt, rec.target, `race ${raceId} announced overlapping work on ${c.paths.join(", ")}: "${plan}"`);
     }
     return conflicts;
   }
@@ -252,7 +260,7 @@ export class Race extends DurableObject<Env> {
   async resume(by: string): Promise<string[]> {
     const h = this.halted();
     if (!h) return [];
-    this.sql.exec("DELETE FROM meta WHERE k = 'halt'");
+    this.db.exec("DELETE FROM meta WHERE k = 'halt'");
     this.logHalt({ by, reason: `resumed after: ${h.reason}`, at: new Date().toISOString() }, "resume");
     this.event("resume", `${by} released the line`, {});
     // Restarting the line restarts the work it stopped.
@@ -278,7 +286,7 @@ export class Race extends DurableObject<Env> {
 
   async postFix(f: Omit<Fix, "id" | "createdAt">): Promise<void> {
     this.event("fix", `posted a fix for "${f.signature}" to the blackboard`, { target: f.target, attempt: f.attemptId });
-    this.sql.exec("INSERT INTO fixes (json) VALUES (?)", JSON.stringify({ ...f, createdAt: new Date().toISOString() }));
+    this.db.exec("INSERT INTO fixes (json) VALUES (?)", JSON.stringify({ ...f, createdAt: new Date().toISOString() }));
     // A new fix may unblock attempts that already finished red.
     await this.retryWithFixes(f.signature);
   }
@@ -432,41 +440,48 @@ export class Race extends DurableObject<Env> {
   // --- storage helpers ------------------------------------------------------
 
   private meta(k: string): string | null {
-    return this.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = ?", k).toArray()[0]?.v ?? null;
+    return this.db.exec<{ v: string }>("SELECT v FROM meta WHERE k = ?", k).toArray()[0]?.v ?? null;
   }
   private setMeta(k: string, v: string) {
-    this.sql.exec("INSERT OR REPLACE INTO meta VALUES (?, ?)", k, v);
+    this.db.exec("INSERT OR REPLACE INTO meta VALUES (?, ?)", k, v);
   }
   private spec(): RaceSpec {
     return JSON.parse(this.meta("spec") ?? "null");
   }
   private attempt(id: string): AttemptRecord | null {
-    const row = this.sql.exec<{ json: string }>("SELECT json FROM attempts WHERE id = ?", id).toArray()[0];
+    const row = this.db.exec<{ json: string }>("SELECT json FROM attempts WHERE id = ?", id).toArray()[0];
     return row ? JSON.parse(row.json) : null;
   }
   private attempts(): AttemptRecord[] {
-    return this.sql.exec<{ json: string }>("SELECT json FROM attempts ORDER BY json_extract(json, '$.createdAt')").toArray().map((r) => JSON.parse(r.json));
+    return this.db.exec<{ json: string }>("SELECT json FROM attempts ORDER BY json_extract(json, '$.createdAt')").toArray().map((r) => JSON.parse(r.json));
   }
   private save(rec: AttemptRecord) {
-    this.sql.exec("INSERT OR REPLACE INTO attempts VALUES (?, ?)", rec.id, JSON.stringify(rec));
+    this.db.exec("INSERT OR REPLACE INTO attempts VALUES (?, ?)", rec.id, JSON.stringify(rec));
+    this.touch();
   }
   private index() {
-    return this.env.RACE.getByName("_index");
+    return this.env.Race.getByName("_index");
   }
 
   private event(kind: FeedEvent["kind"], text: string, where: { target?: string; attempt?: string }) {
     const e = { at: new Date().toISOString(), kind, target: where.target ?? null, attempt: where.attempt ?? null, text: text.slice(0, 500) };
-    this.sql.exec("INSERT INTO feed (json) VALUES (?)", JSON.stringify(e));
+    this.db.exec("INSERT INTO feed (json) VALUES (?)", JSON.stringify(e));
+    this.touch();
+  }
+
+  /** Tell every open dashboard that this race changed. */
+  private touch() {
+    this.setState({ version: this.state.version + 1, updatedAt: new Date().toISOString(), feed: this.feed().slice(-20) });
   }
 
   private feed(): FeedEvent[] {
-    return this.sql
+    return this.db
       .exec<{ id: number; json: string }>("SELECT id, json FROM (SELECT id, json FROM feed ORDER BY id DESC LIMIT 300) ORDER BY id")
       .toArray()
       .map((r) => ({ id: r.id, ...JSON.parse(r.json) }));
   }
 
   private fixes(): Fix[] {
-    return this.sql.exec<{ id: number; json: string }>("SELECT id, json FROM fixes ORDER BY id").toArray().map((r) => ({ id: r.id, ...JSON.parse(r.json) }));
+    return this.db.exec<{ id: number; json: string }>("SELECT id, json FROM fixes ORDER BY id").toArray().map((r) => ({ id: r.id, ...JSON.parse(r.json) }));
   }
 }
