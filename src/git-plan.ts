@@ -37,3 +37,6 @@ export function matchRepoAuth(url: string, repoAuth: Record<string, string>): st
   }
   return undefined;
 }
+
+/** POSIX single-quote a shell argument. */
+export const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;

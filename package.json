@@ -5,7 +5,11 @@
   "scripts": {
     "test": "vitest run",
     "dev": "wrangler dev",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "build:openapi": "tsx scripts/build-openapi.ts",
+    "build:client": "npx --yes openapi-typescript@7.13.0 public/openapi.json -o src/client/schema.d.ts",
+    "build:api": "npm run build:openapi && npm run build:client",
+    "lint:spec": "redocly lint public/openapi.json"
   },
   "keywords": [],
   "author": "",
@@ -14,7 +18,9 @@
   "private": true,
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@redocly/cli": "2.57.0",
     "@types/node": "26.6.3",
+    "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vitest": "4.1.11",
     "wrangler": "4.145.0"
@@ -22,7 +28,10 @@
   "dependencies": {
     "@anthropic-ai/sdk": "0.131.0",
     "@cloudflare/sandbox": "1.0.0",
-    "hono": "4.13.12"
+    "@hono/zod-openapi": "1.6.3",
+    "hono": "4.13.12",
+    "openapi-fetch": "0.17.0",
+    "zod": "4.6.5"
   },
   "allowScripts": {
     "esbuild@0.28.1": true,

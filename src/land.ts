@@ -5,7 +5,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { repoHost } from "./repo-host";
 import { egressFor, sandboxFor } from "./runtime";
-import { quote } from "./sandbox";
+import { quote } from "./git-plan";
 import { trailers } from "./trailers";
 
 export interface LandParams {

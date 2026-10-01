@@ -4,80 +4,16 @@
 // other attempt that hits the same failure.
 
 import { DurableObject } from "cloudflare:workers";
-import type { AttemptParams, AttemptReport } from "./attempt";
-import { clusterOutcomes, defaultWinners, errorSignature, type Cluster } from "./cluster";
-import { DEFAULT_POLICY, evaluate, type Policy, type Verdict } from "./policy";
+import type { AttemptParams } from "./attempt";
+import type { AttemptReport } from "./schemas";
+import { clusterOutcomes, defaultWinners, errorSignature } from "./cluster";
+import { DEFAULT_POLICY, evaluate } from "./policy";
 import { repoHost } from "./repo-host";
-import type { SyncStatus } from "./sync";
 import { relaunchAfterHalt } from "./race-logic";
 
-export interface TargetSpec {
-  /** Display name, e.g. "jekyll-titles-from-headings". */
-  name: string;
-  /** Public HTTPS git URL to import from. */
-  url: string;
-  branch?: string;
-}
-
-export interface RaceSpec {
-  intent: string;
-  targets: TargetSpec[];
-  k: number;
-  check: string;
-  policy?: Policy;
-}
-
-export type AttemptState = "running" | "done" | "halted" | "landing" | "landed" | "land-failed";
-
-export interface Halt {
-  by: string;
-  reason: string;
-  at: string;
-}
-
-export interface AttemptRecord {
-  id: string;
-  target: string;
-  base: string;
-  fork: string;
-  state: AttemptState;
-  /** Set when this attempt is a coordinated retry of another. */
-  retryOf: string | null;
-  hints: string[];
-  report: AttemptReport | null;
-  landedSha: string | null;
-  landError: string | null;
-  createdAt: string;
-}
-
-export interface Fix {
-  id: number;
-  attemptId: string;
-  target: string;
-  signature: string;
-  errorLog: string;
-  diff: string;
-  rationale: string;
-  createdAt: string;
-}
-
-export interface ClusterView extends Cluster {
-  verdict: Verdict;
-  winners: Record<string, string>;
-}
-
-export interface RaceView {
-  id: string;
-  spec: RaceSpec;
-  createdAt: string;
-  attempts: AttemptRecord[];
-  clusters: ClusterView[];
-  fixes: Fix[];
-  approved: string[];
-  halt: Halt | null;
-  /** Per-repo upstream sync before the race started. */
-  sync: Record<string, { status: SyncStatus | "syncing"; detail: string }>;
-}
+// Types come from the API contract (src/schemas.ts) so spec and code can't drift.
+export type { AttemptRecord, AttemptState, ClusterView, Fix, Halt, RaceSpec, RaceView, TargetSpec } from "./schemas";
+import type { AttemptRecord, Fix, Halt, RaceSpec, RaceView, SyncStatus, TargetSpec } from "./schemas";
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
 // Base repos are shared across races so each target is imported once.
@@ -279,7 +215,8 @@ export class Race extends DurableObject<Env> {
 
   // --- review ---------------------------------------------------------------
 
-  async view(): Promise<RaceView> {
+  async view(): Promise<RaceView | null> {
+    if (!this.meta("spec")) return null;
     const attempts = this.attempts();
     const outcomes = attempts
       .filter((a) => a.report)
@@ -318,6 +255,7 @@ export class Race extends DurableObject<Env> {
   ): Promise<string[]> {
     const overrides = opts.overrides ?? {};
     const v = await this.view();
+    if (!v) throw new Error("no such race");
     if (v.halt) throw new Error(`line is stopped: ${v.halt.reason}`);
     const cluster = v.clusters.find((c) => c.key === clusterKey);
     if (!cluster) throw new Error("no such cluster");

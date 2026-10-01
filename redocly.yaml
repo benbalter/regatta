@@ -1,0 +1,5 @@
+extends:
+  - recommended
+rules:
+  # listRaces takes no input, so it has no client error to describe.
+  operation-4xx-response: off

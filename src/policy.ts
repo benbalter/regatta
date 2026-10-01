@@ -4,19 +4,14 @@
 
 import type { Cluster } from "./cluster";
 
-export interface Policy {
-  /** Clusters that touch any of these paths always need a human. */
-  requireReviewPaths: string[];
-  /** Larger changes than this (lines, per attempt) need a human. */
-  maxAutoDiffSize: number;
-}
+export type { Policy, Verdict } from "./schemas";
+import type { Policy, Verdict } from "./schemas";
 
 export const DEFAULT_POLICY: Policy = {
   requireReviewPaths: ["*.gemspec", "lib/**", "Gemfile"],
   maxAutoDiffSize: 80,
 };
 
-export type Verdict = { decision: "auto" | "review" | "blocked"; reasons: string[] };
 
 // Minimal glob: `**` spans directories, `*` stays within one segment.
 export function globMatch(pattern: string, path: string): boolean {

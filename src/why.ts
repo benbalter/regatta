@@ -5,17 +5,11 @@
 
 import { repoHost } from "./repo-host";
 import { egressFor, sandboxFor } from "./runtime";
-import { quote } from "./sandbox";
-import { parseTrailers, type RegattaTrailers } from "./trailers";
+import { quote } from "./git-plan";
+import { parseTrailers } from "./trailers";
 
-export interface WhyAnswer {
-  repo: string;
-  path: string;
-  line: number;
-  text: string;
-  commit: { sha: string; author: string; date: string; subject: string; trailers: Partial<RegattaTrailers> };
-  landing: { sha: string; subject: string; trailers: Partial<RegattaTrailers> } | null;
-}
+export type { WhyAnswer } from "./schemas";
+import type { WhyAnswer } from "./schemas";
 
 const SEP = "\x1f";
 

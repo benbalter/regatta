@@ -113,4 +113,5 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-export const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+import { quote } from "./git-plan";
+export { quote };

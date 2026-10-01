@@ -5,10 +5,11 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { repoHost } from "./repo-host";
 import { egressFor, sandboxFor, waitReady } from "./runtime";
-import { quote } from "./sandbox";
+import { quote } from "./git-plan";
 import { trailers } from "./trailers";
 
-export type SyncStatus = "imported" | "up-to-date" | "fast-forwarded" | "merged" | "conflict" | "failed";
+export type { SyncStatus } from "./schemas";
+import type { SyncStatus } from "./schemas";
 
 export interface SyncParams {
   raceId: string;

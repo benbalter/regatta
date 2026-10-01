@@ -1,0 +1,1275 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Regatta API",
+    "version": "0.1.0",
+    "description": "Races, not pull requests: one intent across many repos as competing agent forks that share fixes, reviewed once per outcome cluster, with an andon cord and decision provenance on every landed line.",
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/license/mit"
+    },
+    "contact": {
+      "name": "Ben Balter",
+      "url": "https://ben.balter.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "This deployment"
+    }
+  ],
+  "tags": [
+    {
+      "name": "races",
+      "description": "Start and inspect races."
+    },
+    {
+      "name": "review",
+      "description": "Review once per outcome cluster."
+    },
+    {
+      "name": "andon",
+      "description": "Stop the line, and restart it."
+    },
+    {
+      "name": "why",
+      "description": "Decision provenance for any landed line."
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "admin": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "REGATTA_ADMIN_TOKEN. Required for anything that spends money or writes to repos."
+      }
+    },
+    "schemas": {
+      "RaceSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "intent",
+          "createdAt"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "RaceSpec": {
+        "type": "object",
+        "properties": {
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "What every agent should accomplish in each repo"
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Target"
+            },
+            "minItems": 1,
+            "maxItems": 50
+          },
+          "k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3,
+            "default": 2,
+            "description": "Competing agent forks per repo"
+          },
+          "check": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Shell command that defines passing, e.g. `bundle exec rake`"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/Policy"
+          }
+        },
+        "required": [
+          "intent",
+          "targets",
+          "check"
+        ]
+      },
+      "Target": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
+            "description": "Display name, e.g. `jekyll-titles-from-headings`"
+          },
+          "url": {
+            "type": "string",
+            "description": "Public HTTPS git URL to import from"
+          },
+          "branch": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "url"
+        ]
+      },
+      "Policy": {
+        "type": "object",
+        "properties": {
+          "requireReviewPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Globs that always need a human, e.g. `lib/**`"
+          },
+          "maxAutoDiffSize": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Larger diffs (lines changed per attempt) need a human"
+          }
+        },
+        "required": [
+          "requireReviewPaths",
+          "maxAutoDiffSize"
+        ]
+      },
+      "Race": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/RaceSpec"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attempt"
+            }
+          },
+          "clusters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cluster"
+            }
+          },
+          "fixes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Fix"
+            }
+          },
+          "approved": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "halt": {
+            "$ref": "#/components/schemas/Halt"
+          },
+          "sync": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "imported",
+                        "up-to-date",
+                        "fast-forwarded",
+                        "merged",
+                        "conflict",
+                        "failed"
+                      ]
+                    },
+                    {
+                      "type": "string",
+                      "enum": [
+                        "syncing"
+                      ]
+                    }
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "detail"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "spec",
+          "createdAt",
+          "attempts",
+          "clusters",
+          "fixes",
+          "approved",
+          "halt",
+          "sync"
+        ]
+      },
+      "Attempt": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "base": {
+            "type": "string"
+          },
+          "fork": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "done",
+              "halted",
+              "landing",
+              "landed",
+              "land-failed"
+            ]
+          },
+          "retryOf": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when this attempt is a coordinated retry or a relaunch"
+          },
+          "hints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fixes from other agents this attempt was seeded with"
+          },
+          "report": {
+            "$ref": "#/components/schemas/AttemptReport"
+          },
+          "landedSha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "landError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "target",
+          "base",
+          "fork",
+          "state",
+          "retryOf",
+          "hints",
+          "report",
+          "landedSha",
+          "landError",
+          "createdAt"
+        ]
+      },
+      "AttemptReport": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "green": {
+            "type": "boolean"
+          },
+          "changedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "failureLog": {
+            "type": "string"
+          },
+          "diffSize": {
+            "type": "integer"
+          },
+          "diff": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "problem": {
+            "type": "string"
+          },
+          "alternatives": {
+            "type": "string"
+          },
+          "headSha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turns": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "halted": {
+            "type": "boolean",
+            "description": "Stopped because the andon cord was pulled"
+          }
+        },
+        "required": [
+          "attemptId",
+          "target",
+          "green",
+          "changedFiles",
+          "failureLog",
+          "diffSize",
+          "diff",
+          "summary",
+          "rationale",
+          "problem",
+          "alternatives",
+          "headSha",
+          "turns"
+        ]
+      },
+      "Cluster": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "green",
+              "failing",
+              "no-op"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "attemptId": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "green": {
+                  "type": "boolean"
+                },
+                "changedFiles": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "failureLog": {
+                  "type": "string"
+                },
+                "diffSize": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "attemptId",
+                "target",
+                "green",
+                "changedFiles",
+                "failureLog",
+                "diffSize"
+              ]
+            }
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/Verdict"
+          },
+          "winners": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Target → default winning attempt (smallest green diff)"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "label",
+          "attempts",
+          "targets",
+          "verdict",
+          "winners"
+        ],
+        "description": "Attempts that ended the same way. Humans review once per cluster, not once per repo."
+      },
+      "Verdict": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "review",
+              "blocked"
+            ]
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "decision",
+          "reasons"
+        ]
+      },
+      "Fix": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "attemptId": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string",
+            "description": "Normalized error this fix resolved"
+          },
+          "errorLog": {
+            "type": "string"
+          },
+          "diff": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "attemptId",
+          "target",
+          "signature",
+          "errorLog",
+          "diff",
+          "rationale",
+          "createdAt"
+        ],
+        "description": "A blackboard entry: one agent's fix, offered to every agent that hits the same error."
+      },
+      "Halt": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "by": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "by",
+          "reason",
+          "at"
+        ],
+        "description": "The andon cord: who stopped the line, and why."
+      },
+      "ApproveRequest": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Cluster key from the race view"
+          },
+          "overrides": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Target → attempt id, to pick a different fork than the default winner"
+          },
+          "approvedBy": {
+            "type": "string"
+          },
+          "dissent": {
+            "type": "string"
+          },
+          "dissentResponse": {
+            "type": "string",
+            "description": "Required answer to the decision doc's dissent; saved on the merge commit"
+          }
+        },
+        "required": [
+          "key"
+        ]
+      },
+      "HaltRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      },
+      "ResumeRequest": {
+        "type": "object",
+        "properties": {
+          "by": {
+            "type": "string"
+          }
+        }
+      },
+      "WhyAnswer": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "object",
+            "properties": {
+              "sha": {
+                "type": "string"
+              },
+              "author": {
+                "type": "string"
+              },
+              "date": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              },
+              "trailers": {
+                "type": "object",
+                "properties": {
+                  "race": {
+                    "type": "string"
+                  },
+                  "attempt": {
+                    "type": "string"
+                  },
+                  "intent": {
+                    "type": "string"
+                  },
+                  "problem": {
+                    "type": "string"
+                  },
+                  "alternatives": {
+                    "type": "string"
+                  },
+                  "rationale": {
+                    "type": "string"
+                  },
+                  "decision": {
+                    "type": "string"
+                  },
+                  "approvedBy": {
+                    "type": "string"
+                  },
+                  "dissent": {
+                    "type": "string"
+                  },
+                  "dissentResponse": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "required": [
+              "sha",
+              "author",
+              "date",
+              "subject",
+              "trailers"
+            ]
+          },
+          "landing": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "sha": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              },
+              "trailers": {
+                "type": "object",
+                "properties": {
+                  "race": {
+                    "type": "string"
+                  },
+                  "attempt": {
+                    "type": "string"
+                  },
+                  "intent": {
+                    "type": "string"
+                  },
+                  "problem": {
+                    "type": "string"
+                  },
+                  "alternatives": {
+                    "type": "string"
+                  },
+                  "rationale": {
+                    "type": "string"
+                  },
+                  "decision": {
+                    "type": "string"
+                  },
+                  "approvedBy": {
+                    "type": "string"
+                  },
+                  "dissent": {
+                    "type": "string"
+                  },
+                  "dissentResponse": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "required": [
+              "sha",
+              "subject",
+              "trailers"
+            ]
+          }
+        },
+        "required": [
+          "repo",
+          "path",
+          "line",
+          "text",
+          "commit",
+          "landing"
+        ],
+        "description": "Why a line exists: the agent's reasoning, and the human or policy decision that landed it."
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/api/races": {
+      "get": {
+        "operationId": "listRaces",
+        "summary": "List races, newest first",
+        "tags": [
+          "races"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Races",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RaceSummary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "startRace",
+        "summary": "Start a race",
+        "description": "One intent fans out to every target as K competing agent forks. Each repo's base is synced from upstream first; agents share fixes through the race's blackboard; results collapse into outcome clusters for review.",
+        "tags": [
+          "races"
+        ],
+        "security": [
+          {
+            "admin": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RaceSpec"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Race started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server has no admin token configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/races/{id}": {
+      "get": {
+        "operationId": "getRace",
+        "security": [],
+        "summary": "A race: attempts, outcome clusters with policy verdicts, the blackboard, and sync status",
+        "tags": [
+          "races"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "cmuptjeil"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The race",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Race"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such race",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/races/{id}/approve": {
+      "post": {
+        "operationId": "approveCluster",
+        "summary": "Approve one outcome cluster and land each target's chosen fork",
+        "description": "Review happens once per cluster, not once per repo. The decision, approver and dissent response are recorded as trailers on each landing merge.",
+        "tags": [
+          "review"
+        ],
+        "security": [
+          {
+            "admin": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "cmuptjeil"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Attempts now landing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "landing": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "landing"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Blocked by policy or the andon cord",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server has no admin token configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/races/{id}/halt": {
+      "post": {
+        "operationId": "pullAndonCord",
+        "summary": "Pull the andon cord: stop the line",
+        "description": "Running attempts halt at their next step, nothing new launches and nothing lands. Agents pull the same cord with their stop_the_line tool.",
+        "tags": [
+          "andon"
+        ],
+        "security": [
+          {
+            "admin": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "cmuptjeil"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HaltRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Line stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server has no admin token configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/races/{id}/resume": {
+      "post": {
+        "operationId": "resumeRace",
+        "summary": "Release the andon cord and relaunch what it stopped",
+        "tags": [
+          "andon"
+        ],
+        "security": [
+          {
+            "admin": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "cmuptjeil"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resumed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "relaunched": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "relaunched"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server has no admin token configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/why": {
+      "get": {
+        "operationId": "why",
+        "summary": "Why does this line exist?",
+        "description": "Blames the line, then returns the agent's problem/alternatives/rationale from its commit and the decision, approver and dissent response from the merge that landed it. Answers are cached per commit and readable by anyone; computing a new one needs the admin token.",
+        "tags": [
+          "why"
+        ],
+        "security": [
+          {},
+          {
+            "admin": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "base-jekyll-titles-from-headings"
+            },
+            "required": true,
+            "name": "repo",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": ".ruby-version"
+            },
+            "required": true,
+            "name": "path",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "example": 1
+            },
+            "required": true,
+            "name": "line",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The why",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhyAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such repo, file or line",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server has no admin token configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {}
+}

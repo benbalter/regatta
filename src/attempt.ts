@@ -10,7 +10,7 @@ import { repoHost, type RepoHost } from "./repo-host";
 import { egressFor, sandboxFor, waitReady } from "./runtime";
 import { trailers } from "./trailers";
 import { commitPlan, commitSubject } from "./git-plan";
-import { quote } from "./sandbox";
+import { quote } from "./git-plan";
 
 export interface AttemptParams {
   raceId: string;
@@ -23,24 +23,8 @@ export interface AttemptParams {
   hints: string[];
 }
 
-export interface AttemptReport {
-  attemptId: string;
-  target: string;
-  green: boolean;
-  changedFiles: string[];
-  failureLog: string;
-  diffSize: number;
-  diff: string;
-  summary: string;
-  rationale: string;
-  problem: string;
-  alternatives: string;
-  headSha: string | null;
-  turns: number;
-  error?: string;
-  /** Set when the attempt stopped because someone pulled the andon cord. */
-  halted?: boolean;
-}
+export type { AttemptReport } from "./schemas";
+import type { AttemptReport } from "./schemas";
 
 /** Thrown when the race's andon cord is pulled mid-attempt. */
 class Halted extends Error {}
