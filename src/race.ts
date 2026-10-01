@@ -246,8 +246,8 @@ export class Race extends Agent<Env, RaceLiveState> {
     this.event("decision", text, {});
   }
 
-  /** A feed line from a workflow (cache hits and saves, for now). */
-  async note(kind: "cache", target: string, attemptId: string, text: string): Promise<void> {
+  /** A feed line from a workflow or the event consumer. */
+  async note(kind: "cache" | "launch", target: string, attemptId: string, text: string): Promise<void> {
     this.event(kind, text, { target, attempt: attemptId });
   }
 

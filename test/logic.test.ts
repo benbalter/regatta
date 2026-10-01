@@ -308,3 +308,24 @@ describe("MCP race summary", async () => {
     expect(s.recentLog).toEqual(["18:00:00 finish foo: green"]);
   });
 });
+
+describe("Artifacts event routing", async () => {
+  const { routeArtifactsEvent } = await import("../src/events");
+  const event = (type: string, repoName: string) => ({ type, source: { type: "artifacts", namespace: "regatta", repoName }, payload: {} });
+
+  it("wakes the attempt whose fork just finished", () => {
+    expect(routeArtifactsEvent(event("cf.artifacts.repo.forked", "cmupudfor-jekyll-titles-from-headings-a1"))).toEqual({
+      kind: "fork-ready",
+      attemptId: "cmupudfor-jekyll-titles-from-headings-a1",
+      raceId: "cmupudfor",
+    });
+    expect(routeArtifactsEvent(event("cf.artifacts.repo.forked", "cmupudfor-foo-r2")).kind).toBe("fork-ready");
+  });
+
+  it("ignores base imports, other event types and malformed messages", () => {
+    expect(routeArtifactsEvent(event("cf.artifacts.repo.imported", "base-jekyll-titles-from-headings")).kind).toBe("ignore");
+    expect(routeArtifactsEvent(event("cf.artifacts.repo.created", "cmupudfor-foo-a1")).kind).toBe("ignore");
+    expect(routeArtifactsEvent(event("cf.artifacts.repo.forked", "someone-elses-repo")).kind).toBe("ignore");
+    expect(routeArtifactsEvent(null).kind).toBe("ignore");
+  });
+});

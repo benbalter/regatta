@@ -11,6 +11,7 @@ import { egressFor, sandboxFor, waitReady } from "./runtime";
 import { trailers } from "./trailers";
 import { commitPlan, commitSubject } from "./git-plan";
 import { parseCacheResult, restoreScript, saveScript } from "./cache";
+import { FORK_READY } from "./events";
 import { quote } from "./git-plan";
 
 export interface AttemptParams {
@@ -44,6 +45,16 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
       await step.do("fork", async () => {
         if ((await host.info(p.fork)).status === "missing") await host.fork(p.base, p.fork);
       });
+      // With Artifacts events on, the Queue consumer wakes us when the fork is
+      // ready (events sent early are buffered). Polling stays as the fallback,
+      // and is the only path against the local fake.
+      if (this.env.ARTIFACTS_EVENTS === "on") {
+        try {
+          await step.waitForEvent("fork-ready", { type: FORK_READY, timeout: "3 minutes" });
+        } catch {
+          /* timed out: fall back to polling */
+        }
+      }
       const fork = await waitReady(step, host, p.fork, "fork");
 
       const { tokenId, baseSha } = await step.do("sandbox", async () => {

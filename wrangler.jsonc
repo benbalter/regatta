@@ -40,6 +40,8 @@
     "REGATTA_AGENT_MODEL": "ollama:qwen3.6",
     "REGATTA_DISSENT_MODEL": "ollama:gemma4",
     "OLLAMA_URL": "http://localhost:11434",
+    // Artifacts events need real Artifacts; locally, attempts poll.
+    "ARTIFACTS_EVENTS": "off",
     // Local dev: the Artifacts binding is remote-only, so point at scripts/fake-artifacts.ts.
     "FAKE_ARTIFACTS_URL": "http://localhost:8790",
     "FAKE_ARTIFACTS_HOST": "artifacts.regatta.local"
@@ -52,10 +54,15 @@
         // A different model family argues against Claude's recommendation.
         "REGATTA_DISSENT_MODEL": "workers-ai:@cf/moonshotai/kimi-k2.6",
         "OLLAMA_URL": "",
+        "ARTIFACTS_EVENTS": "on",
         "FAKE_ARTIFACTS_URL": "",
         "FAKE_ARTIFACTS_HOST": ""
       },
       "ai": { "binding": "AI" },
+      // Account-level Artifacts events (repo.forked) arrive here; see src/events.ts.
+      // Setup: wrangler queues create regatta-artifacts-events &&
+      //   wrangler queues subscription create regatta-artifacts-events --source artifacts --events repo.forked
+      "queues": { "consumers": [{ "queue": "regatta-artifacts-events", "max_batch_timeout": 1 }] },
       "artifacts": [{ "binding": "ARTIFACTS", "namespace": "regatta" }],
       "durable_objects": {
         "bindings": [
