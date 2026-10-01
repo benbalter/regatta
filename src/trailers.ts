@@ -1,9 +1,9 @@
 // The *why* travels with the commit. Git trailers survive clones, forks and
-// merges, so anyone reading `git log` later sees the campaign intent and the
+// merges, so anyone reading `git log` later sees the race intent and the
 // agent's reasoning without needing Regatta.
 
 export interface RegattaTrailers {
-  campaign: string;
+  race: string;
   attempt: string;
   intent: string;
   problem: string;
@@ -17,7 +17,7 @@ export interface RegattaTrailers {
 }
 
 const KEYS: Array<[keyof RegattaTrailers, string]> = [
-  ["campaign", "Regatta-Campaign"],
+  ["race", "Regatta-Race"],
   ["attempt", "Regatta-Attempt"],
   ["intent", "Regatta-Intent"],
   ["problem", "Regatta-Problem"],

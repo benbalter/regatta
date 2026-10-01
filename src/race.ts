@@ -1,5 +1,5 @@
-// A campaign: one intent fanned out across targets × K attempts. This Durable
-// Object is the single source of truth for the campaign, and it is also the
+// A race: one intent fanned out across targets × K attempts. This Durable
+// Object is the single source of truth for the race, and it is also the
 // agents' shared blackboard: fixes posted by one attempt are handed to every
 // other attempt that hits the same failure.
 
@@ -8,7 +8,7 @@ import type { AttemptParams, AttemptReport } from "./attempt";
 import { clusterOutcomes, defaultWinners, errorSignature, type Cluster } from "./cluster";
 import { DEFAULT_POLICY, evaluate, type Policy, type Verdict } from "./policy";
 import { repoHost } from "./repo-host";
-import { relaunchAfterHalt } from "./campaign-logic";
+import { relaunchAfterHalt } from "./race-logic";
 
 export interface TargetSpec {
   /** Display name, e.g. "jekyll-titles-from-headings". */
@@ -18,7 +18,7 @@ export interface TargetSpec {
   branch?: string;
 }
 
-export interface CampaignSpec {
+export interface RaceSpec {
   intent: string;
   targets: TargetSpec[];
   k: number;
@@ -65,9 +65,9 @@ export interface ClusterView extends Cluster {
   winners: Record<string, string>;
 }
 
-export interface CampaignView {
+export interface RaceView {
   id: string;
-  spec: CampaignSpec;
+  spec: RaceSpec;
   createdAt: string;
   attempts: AttemptRecord[];
   clusters: ClusterView[];
@@ -77,11 +77,11 @@ export interface CampaignView {
 }
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
-// Base repos are shared across campaigns so each target is imported once.
+// Base repos are shared across races so each target is imported once.
 export const baseName = (t: TargetSpec) => `base-${slug(t.name)}`;
 const MAX_RETRIES_PER_TARGET = 2;
 
-export class Campaign extends DurableObject<Env> {
+export class Race extends DurableObject<Env> {
   private sql = this.ctx.storage.sql;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -90,7 +90,7 @@ export class Campaign extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS fixes (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS campaigns (id TEXT PRIMARY KEY, intent TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS races (id TEXT PRIMARY KEY, intent TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS whys (k TEXT PRIMARY KEY, json TEXT NOT NULL);
     `);
   }
@@ -98,12 +98,12 @@ export class Campaign extends DurableObject<Env> {
   // --- index (only used on the instance named "_index") -------------------
 
   async register(id: string, intent: string): Promise<void> {
-    this.sql.exec("INSERT OR REPLACE INTO campaigns VALUES (?, ?, ?)", id, intent, new Date().toISOString());
+    this.sql.exec("INSERT OR REPLACE INTO races VALUES (?, ?, ?)", id, intent, new Date().toISOString());
   }
 
   async list(): Promise<Array<{ id: string; intent: string; createdAt: string }>> {
     return this.sql
-      .exec<{ id: string; intent: string; created_at: string }>("SELECT * FROM campaigns ORDER BY created_at DESC")
+      .exec<{ id: string; intent: string; created_at: string }>("SELECT * FROM races ORDER BY created_at DESC")
       .toArray()
       .map((r) => ({ id: r.id, intent: r.intent, createdAt: r.created_at }));
   }
@@ -117,10 +117,10 @@ export class Campaign extends DurableObject<Env> {
     this.sql.exec("INSERT OR REPLACE INTO whys VALUES (?, ?)", key, json);
   }
 
-  // --- campaign lifecycle ---------------------------------------------------
+  // --- race lifecycle ---------------------------------------------------
 
-  async start(id: string, spec: CampaignSpec): Promise<void> {
-    if (this.meta("spec")) throw new Error("campaign already started");
+  async start(id: string, spec: RaceSpec): Promise<void> {
+    if (this.meta("spec")) throw new Error("race already started");
     this.setMeta("id", id);
     this.setMeta("spec", JSON.stringify(spec));
     this.setMeta("createdAt", new Date().toISOString());
@@ -155,7 +155,7 @@ export class Campaign extends DurableObject<Env> {
       createdAt: new Date().toISOString(),
     };
     this.save(rec);
-    const params: AttemptParams = { campaignId: id, attemptId, target, base, fork: rec.fork, intent: spec.intent, check: spec.check, hints };
+    const params: AttemptParams = { raceId: id, attemptId, target, base, fork: rec.fork, intent: spec.intent, check: spec.check, hints };
     await this.env.ATTEMPT.create({ id: attemptId, params });
   }
 
@@ -256,7 +256,7 @@ export class Campaign extends DurableObject<Env> {
 
   // --- review ---------------------------------------------------------------
 
-  async view(): Promise<CampaignView> {
+  async view(): Promise<RaceView> {
     const attempts = this.attempts();
     const outcomes = attempts
       .filter((a) => a.report)
@@ -309,7 +309,7 @@ export class Campaign extends DurableObject<Env> {
       await this.env.LAND.create({
         id: `land-${attemptId}`,
         params: {
-          campaignId: v.id,
+          raceId: v.id,
           attemptId,
           target,
           base: rec.base,
@@ -344,7 +344,7 @@ export class Campaign extends DurableObject<Env> {
   private setMeta(k: string, v: string) {
     this.sql.exec("INSERT OR REPLACE INTO meta VALUES (?, ?)", k, v);
   }
-  private spec(): CampaignSpec {
+  private spec(): RaceSpec {
     return JSON.parse(this.meta("spec") ?? "null");
   }
   private attempt(id: string): AttemptRecord | null {

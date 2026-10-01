@@ -7,12 +7,12 @@
   "observability": { "enabled": true },
   "durable_objects": {
     "bindings": [
-      { "name": "CAMPAIGN", "class_name": "Campaign" },
+      { "name": "RACE", "class_name": "Race" },
       { "name": "SANDBOX", "class_name": "Sandbox" }
     ]
   },
   "exports": {
-    "Campaign": { "type": "durable-object", "storage": "sqlite" },
+    "Race": { "type": "durable-object", "storage": "sqlite" },
     "Sandbox": { "type": "durable-object", "storage": "sqlite" }
   },
   "containers": [
@@ -48,7 +48,7 @@
       "artifacts": [{ "binding": "ARTIFACTS", "namespace": "regatta" }],
       "durable_objects": {
         "bindings": [
-          { "name": "CAMPAIGN", "class_name": "Campaign" },
+          { "name": "RACE", "class_name": "Race" },
           { "name": "SANDBOX", "class_name": "Sandbox" }
         ]
       },

@@ -1,4 +1,4 @@
-// Pure campaign decisions, testable without the Durable Object runtime.
+// Pure race decisions, testable without the Durable Object runtime.
 
 export interface AttemptLike {
   id: string;

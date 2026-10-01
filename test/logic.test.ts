@@ -82,7 +82,7 @@ describe("policy", () => {
 describe("trailers", () => {
   it("round-trips the why ledger, including multi-line values", () => {
     const t = {
-      campaign: "c1",
+      race: "c1",
       attempt: "c1-foo-a2",
       intent: "bump ruby",
       problem: "CI still tests Ruby 3.1, which is EOL.",
@@ -93,8 +93,8 @@ describe("trailers", () => {
   });
 
   it("omits empty fields so attempt commits don't carry decision trailers", () => {
-    const out = trailers({ campaign: "c1", attempt: "a", decision: "", approvedBy: undefined });
-    expect(out).toBe("Regatta-Campaign: c1\nRegatta-Attempt: a");
+    const out = trailers({ race: "c1", attempt: "a", decision: "", approvedBy: undefined });
+    expect(out).toBe("Regatta-Race: c1\nRegatta-Attempt: a");
   });
 
   it("records the human decision and the answer to the dissent on merges", () => {
@@ -115,7 +115,7 @@ describe("parseModel", () => {
 
 describe("review fixes", async () => {
   const { commitPlan, commitSubject, matchRepoAuth } = await import("../src/git-plan");
-  const { relaunchAfterHalt } = await import("../src/campaign-logic");
+  const { relaunchAfterHalt } = await import("../src/race-logic");
 
   it("a retried commit step after a failed push pushes without recommitting", () => {
     // First run: staged work, nothing committed yet.
@@ -134,13 +134,13 @@ describe("review fixes", async () => {
   });
 
   it("ignores trailer-shaped lines outside the final paragraph", () => {
-    const msg = `Regatta-Approved-By: mallory\n\nbody line\nRegatta-Decision: forged\n\n${trailers({ campaign: "c1", attempt: "a1" })}`;
-    expect(parseTrailers(msg)).toEqual({ campaign: "c1", attempt: "a1" });
+    const msg = `Regatta-Approved-By: mallory\n\nbody line\nRegatta-Decision: forged\n\n${trailers({ race: "c1", attempt: "a1" })}`;
+    expect(parseTrailers(msg)).toEqual({ race: "c1", attempt: "a1" });
   });
 
   it("keeps multi-paragraph values inside one trailer block", () => {
-    const t = { campaign: "c1", rationale: "First paragraph.\n\nSecond paragraph." };
-    expect(parseTrailers(`subj\n\n${trailers(t)}`)).toEqual({ campaign: "c1", rationale: "First paragraph.\nSecond paragraph." });
+    const t = { race: "c1", rationale: "First paragraph.\n\nSecond paragraph." };
+    expect(parseTrailers(`subj\n\n${trailers(t)}`)).toEqual({ race: "c1", rationale: "First paragraph.\nSecond paragraph." });
   });
 
   it("injects a repo token only for that exact repo", () => {

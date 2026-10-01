@@ -9,7 +9,7 @@ import { quote } from "./sandbox";
 import { trailers } from "./trailers";
 
 export interface LandParams {
-  campaignId: string;
+  raceId: string;
   attemptId: string;
   target: string;
   base: string;
@@ -26,11 +26,11 @@ export class LandWorkflow extends WorkflowEntrypoint<Env, LandParams> {
   async run(event: WorkflowEvent<LandParams>, step: WorkflowStep) {
     const p = event.payload;
     const host = repoHost(this.env);
-    const campaign = this.env.CAMPAIGN.getByName(p.campaignId);
+    const race = this.env.RACE.getByName(p.raceId);
     const sandbox = sandboxFor(this.env, `land-${p.attemptId}`);
     try {
       const halt = await step.do("gate", async () => {
-        const h = await campaign.halted();
+        const h = await race.halted();
         return h ? h.reason : "";
       });
       if (halt) throw new Error(`line is stopped: ${halt}`);
@@ -57,9 +57,9 @@ export class LandWorkflow extends WorkflowEntrypoint<Env, LandParams> {
           await Promise.all([host.revokeToken(p.base, bt.id), host.revokeToken(p.fork, ft.id)]);
         }
       });
-      await step.do("record", () => campaign.landed(p.attemptId, sha, null));
+      await step.do("record", () => race.landed(p.attemptId, sha, null));
     } catch (e) {
-      await step.do("record-error", () => campaign.landed(p.attemptId, null, (e as Error).message));
+      await step.do("record-error", () => race.landed(p.attemptId, null, (e as Error).message));
     } finally {
       await step.do("cleanup", () => sandbox.destroy());
     }
@@ -69,8 +69,8 @@ export class LandWorkflow extends WorkflowEntrypoint<Env, LandParams> {
 // The merge commit is where the human (or policy) decision lives, so `why`
 // can answer "who decided this, and what did they say to the dissent?"
 function mergeMessage(p: LandParams): string {
-  return `Land ${p.target} from campaign ${p.campaignId}\n\n${p.clusterLabel}\n\n${trailers({
-    campaign: p.campaignId,
+  return `Land ${p.target} from race ${p.raceId}\n\n${p.clusterLabel}\n\n${trailers({
+    race: p.raceId,
     attempt: p.attemptId,
     decision: p.decision,
     approvedBy: p.approvedBy,

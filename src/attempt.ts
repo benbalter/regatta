@@ -13,7 +13,7 @@ import { commitPlan, commitSubject } from "./git-plan";
 import { quote } from "./sandbox";
 
 export interface AttemptParams {
-  campaignId: string;
+  raceId: string;
   attemptId: string;
   target: string;
   base: string;
@@ -42,7 +42,7 @@ export interface AttemptReport {
   halted?: boolean;
 }
 
-/** Thrown when the campaign's andon cord is pulled mid-attempt. */
+/** Thrown when the race's andon cord is pulled mid-attempt. */
 class Halted extends Error {}
 
 const TOKEN_TTL = 3 * 60 * 60;
@@ -51,7 +51,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
   async run(event: WorkflowEvent<AttemptParams>, step: WorkflowStep) {
     const p = event.payload;
     const host = repoHost(this.env);
-    const campaign = this.env.CAMPAIGN.getByName(p.campaignId);
+    const race = this.env.RACE.getByName(p.raceId);
     const sandbox = sandboxFor(this.env, p.attemptId);
 
     try {
@@ -77,7 +77,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
         }
       });
 
-      const result = await this.agentLoop(p, step, sandbox, campaign);
+      const result = await this.agentLoop(p, step, sandbox, race);
 
       const report = await step.do("commit", async () => {
         await this.requireSandbox(sandbox);
@@ -91,7 +91,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
 
         if (plan.commit) {
           const msg = `${commitSubject(result.summary, p.intent)}\n\n${trailers({
-            campaign: p.campaignId,
+            race: p.raceId,
             attempt: p.attemptId,
             intent: p.intent,
             problem: result.problem || "(none given)",
@@ -134,16 +134,16 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
         } satisfies AttemptReport;
       });
 
-      await step.do("report", () => campaign.report(report));
+      await step.do("report", () => race.report(report));
       await step.do("cleanup", async () => {
         await host.revokeToken(p.fork, tokenId);
         await sandbox.destroy();
       });
     } catch (e) {
-      // Report infrastructure failures and halts too, so the campaign never waits forever.
+      // Report infrastructure failures and halts too, so the race never waits forever.
       const halted = e instanceof Halted;
       await step.do("report-error", () =>
-        campaign.report({
+        race.report({
           attemptId: p.attemptId,
           target: p.target,
           green: false,
@@ -169,7 +169,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
     p: AttemptParams,
     step: WorkflowStep,
     sandbox: ReturnType<typeof sandboxFor>,
-    campaign: ReturnType<Env["CAMPAIGN"]["getByName"]>,
+    race: ReturnType<Env["RACE"]["getByName"]>,
   ) {
     const model = parseModel(this.env.REGATTA_AGENT_MODEL);
     const system = systemPrompt(p.check);
@@ -180,7 +180,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       // The andon cord: anyone can stop the line, and every turn honors it.
       const halt = await step.do(`gate-${turn}`, async () => {
-        const h = await campaign.halted();
+        const h = await race.halted();
         return h ? `${h.reason} (by ${h.by})` : "";
       });
       if (halt) throw new Halted(halt);
@@ -216,7 +216,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
         await step.do(`tools-${turn}`, { retries: { limit: 0, delay: "1 second" } }, async () => {
           await this.requireSandbox(sandbox);
           const out: Anthropic.Beta.BetaToolResultBlockParam[] = [];
-          for (const call of calls) out.push(await this.runTool(call, p, sandbox, campaign));
+          for (const call of calls) out.push(await this.runTool(call, p, sandbox, race));
           return JSON.stringify(out);
         }),
       ) as Anthropic.Beta.BetaToolResultBlockParam[];
@@ -238,7 +238,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
     call: Anthropic.Beta.BetaToolUseBlock,
     p: AttemptParams,
     sandbox: ReturnType<typeof sandboxFor>,
-    campaign: ReturnType<Env["CAMPAIGN"]["getByName"]>,
+    race: ReturnType<Env["RACE"]["getByName"]>,
   ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
     const input = call.input as Record<string, string>;
     const done = (content: string, isError = false): Anthropic.Beta.BetaToolResultBlockParam => ({
@@ -261,13 +261,13 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
         return r.exitCode === 0 ? done(`wrote ${input.path}`) : done(r.stderr, true);
       }
       case "check":
-        return done(await this.check(p, sandbox, campaign));
+        return done(await this.check(p, sandbox, race));
       case "stop_the_line": {
-        await campaign.halt({ by: p.attemptId, reason: input.reason });
-        return done("Line stopped. Every agent in this campaign will halt at its next step.");
+        await race.halt({ by: p.attemptId, reason: input.reason });
+        return done("Line stopped. Every agent in this race will halt at its next step.");
       }
       case "ask_fleet": {
-        const fixes = await campaign.lookup(input.error);
+        const fixes = await race.lookup(input.error);
         return done(
           fixes.length
             ? fixes.map((f) => `From ${f.target} (error: ${f.signature}):\n${f.rationale}\nDiff:\n${f.diff}`).join("\n\n---\n\n")
@@ -280,9 +280,9 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
   }
 
   // Runs the check. When a check passes after an earlier failure, the diff
-  // between the two states is this agent's fix, so post it to the campaign
+  // between the two states is this agent's fix, so post it to the race
   // blackboard for every other agent.
-  private async check(p: AttemptParams, sandbox: ReturnType<typeof sandboxFor>, campaign: ReturnType<Env["CAMPAIGN"]["getByName"]>) {
+  private async check(p: AttemptParams, sandbox: ReturnType<typeof sandboxFor>, race: ReturnType<Env["RACE"]["getByName"]>) {
     const r = await sandbox.sh(p.check, { timeoutSeconds: 900 });
     const output = (r.stdout + r.stderr).slice(-6000);
     const stateFile = "/workspace/.regatta-last-failure";
@@ -297,7 +297,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
       const diff = (await sandbox.sh(`git add -A && git diff --cached ${quote(tree)} && git reset --quiet`)).stdout;
       await sandbox.sh(`rm -f ${stateFile}`);
       if (diff.trim()) {
-        await campaign.postFix({ attemptId: p.attemptId, target: p.target, signature: errorSignature(log), errorLog: log.slice(-1500), diff: diff.slice(0, 8000), rationale: "Fixed a failing check; see diff." });
+        await race.postFix({ attemptId: p.attemptId, target: p.target, signature: errorSignature(log), errorLog: log.slice(-1500), diff: diff.slice(0, 8000), rationale: "Fixed a failing check; see diff." });
         return `CHECK PASSED. Your fix for the earlier failure was shared with the fleet.\n${output.slice(-1500)}`;
       }
     }

@@ -48,14 +48,14 @@ export const TOOLS: Anthropic.Tool[] = [
   {
     name: "check",
     description:
-      "Run the campaign's check command (the repo's CI) and report pass or fail. Call this after making changes and before finishing. When a failing check later passes, your fix is shared with the other agents in this campaign.",
+      "Run the race's check command (the repo's CI) and report pass or fail. Call this after making changes and before finishing. When a failing check later passes, your fix is shared with the other agents in this race.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
     strict: true,
   },
   {
     name: "ask_fleet",
     description:
-      "Look up fixes other agents in this campaign found for a failure. Call this when a check fails before you start debugging; another repo may already have hit and solved the same error.",
+      "Look up fixes other agents in this race found for a failure. Call this when a check fails before you start debugging; another repo may already have hit and solved the same error.",
     input_schema: {
       type: "object",
       properties: { error: { type: "string", description: "The key error line from the failing output" } },
@@ -67,7 +67,7 @@ export const TOOLS: Anthropic.Tool[] = [
   {
     name: "stop_the_line",
     description:
-      "Pull the andon cord: halt this whole campaign across every repository. Use it only when continuing would cause harm, for example the intent is unsafe, contradicts itself, or would break every repo the same way. A human will read your reason.",
+      "Pull the andon cord: halt this whole race across every repository. Use it only when continuing would cause harm, for example the intent is unsafe, contradicts itself, or would break every repo the same way. A human will read your reason.",
     input_schema: {
       type: "object",
       properties: { reason: { type: "string", description: "What you found and why the fleet should stop" } },
@@ -110,7 +110,7 @@ export function kickoff(intent: string, target: string, hints: string[]): string
   const parts = [`Repository: ${target}`, `Intent: ${intent}`];
   if (hints.length) {
     parts.push(
-      "Other agents in this campaign already solved failures like the one this repository hit before. Their fixes:",
+      "Other agents in this race already solved failures like the one this repository hit before. Their fixes:",
       ...hints.map((h, i) => `${i + 1}. ${h}`),
     );
   }

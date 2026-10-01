@@ -1,4 +1,4 @@
-// Deterministic outcome clustering. The point of a campaign is that a human
+// Deterministic outcome clustering. The point of a race is that a human
 // reviews once per *kind* of result, not once per repo, so attempts that
 // failed the same way or changed the same files must land in the same bucket
 // no matter which repo they ran against.
