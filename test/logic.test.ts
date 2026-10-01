@@ -286,3 +286,25 @@ describe("R2 dependency cache", async () => {
     expect(key(restoreScript)).toMatch(/git ls-files .*Gemfile Gemfile\.lock '\*\.gemspec'.*ruby -v/);
   });
 });
+
+describe("MCP race summary", async () => {
+  const { summarize } = await import("../src/race-logic");
+  it("gives agents outcomes, verdicts and the dissent, without diffs", () => {
+    const attempt = (id: string, state: string, green?: boolean) => ({
+      id, target: "foo", base: "base-foo", fork: id, state, retryOf: null, hints: [], announcement: null, undeclared: [], landedSha: null, landError: null, createdAt: "",
+      report: green === undefined ? null : { attemptId: id, target: "foo", green, changedFiles: [], failureLog: "", diffSize: 1, diff: "SECRET DIFF", summary: "", rationale: "", problem: "", alternatives: "", headSha: null, turns: 3 },
+    });
+    const view = {
+      id: "r1", spec: { intent: "pin ruby", targets: [], k: 2, check: "true" }, createdAt: "", approved: [], halt: null, sync: {}, fixes: [],
+      attempts: [attempt("r1-foo-a1", "done", true), attempt("r1-foo-a2", "done", false), attempt("r1-foo-a3", "running")],
+      clusters: [{ key: "green:x", kind: "green", label: "green, changed x", attempts: [], targets: ["foo"], verdict: { decision: "review", reasons: ["r"] }, winners: { foo: "r1-foo-a1" }, conflicts: {} }],
+      decisionDocs: { "green:x": { clusterKey: "green:x", basis: "", problem: "p", options: [], recommendation: "take a1", ask: "approve?", dissent: { argument: "a2 is safer", strongestAlternative: "a2", model: "m" }, model: "m", generatedAt: "" } },
+      feed: [{ id: 1, at: "2026-10-01T18:00:00Z", kind: "finish", target: "foo", attempt: "r1-foo-a1", text: "green" }],
+    } as unknown as Parameters<typeof summarize>[0];
+    const s = summarize(view);
+    expect(s.boats).toEqual({ green: 1, red: 1, running: 1 });
+    expect(s.clusters[0].decisionDoc).toEqual({ recommendation: "take a1", ask: "approve?", dissent: "a2 is safer" });
+    expect(JSON.stringify(s)).not.toContain("SECRET DIFF");
+    expect(s.recentLog).toEqual(["18:00:00 finish foo: green"]);
+  });
+});
