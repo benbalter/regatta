@@ -4,7 +4,7 @@
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { repoHost } from "./repo-host";
-import { egressFor, sandboxFor } from "./runtime";
+import { egressFor, sandboxFor, sandboxId } from "./runtime";
 import { quote } from "./git-plan";
 import { trailers } from "./trailers";
 
@@ -27,7 +27,7 @@ export class LandWorkflow extends WorkflowEntrypoint<Env, LandParams> {
     const p = event.payload;
     const host = repoHost(this.env);
     const race = this.env.Race.getByName(p.raceId);
-    const sandbox = sandboxFor(this.env, `land-${p.attemptId}`);
+    const sandbox = sandboxFor(this.env, sandboxId(p.attemptId, "land"));
     try {
       const halt = await step.do("gate", async () => {
         const h = await race.halted();
@@ -39,7 +39,7 @@ export class LandWorkflow extends WorkflowEntrypoint<Env, LandParams> {
         const fork = await host.info(p.fork);
         const [bt, ft] = await Promise.all([host.token(p.base, "write", 1800), host.token(p.fork, "read", 1800)]);
         try {
-          await sandbox.prepare(egressFor(this.env, { [base.remote]: bt.secret, [fork.remote]: ft.secret }));
+          await sandbox.fresh(egressFor(this.env, "land", { repoAuth: { [base.remote]: bt.secret, [fork.remote]: ft.secret } }));
           await sandbox.writeFile("/workspace/.land-msg", mergeMessage(p));
           const script = [
             "rm -rf repo",

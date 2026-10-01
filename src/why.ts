@@ -4,7 +4,7 @@
 // holds the human or policy decision.
 
 import { repoHost } from "./repo-host";
-import { egressFor, sandboxFor } from "./runtime";
+import { egressFor, sandboxFor, sandboxId } from "./runtime";
 import { quote } from "./git-plan";
 import { parseTrailers } from "./trailers";
 
@@ -18,10 +18,10 @@ export async function why(env: Env, repo: string, path: string, line: number): P
   const info = await host.info(repo);
   if (info.status !== "ready") throw new Error(`${repo} is ${info.status}`);
   // One long-lived sandbox per repo keeps a warm clone; each query just fetches.
-  const sandbox = sandboxFor(env, `why-${repo}`);
+  const sandbox = sandboxFor(env, sandboxId(repo, "why"));
   const token = await host.token(repo, "read", 600);
   try {
-    await sandbox.prepare(egressFor(env, { [info.remote]: token.secret }));
+    await sandbox.prepare(egressFor(env, "why", { repoAuth: { [info.remote]: token.secret } }));
     const sync = await sandbox.sh(
       `if [ -d repo/.git ]; then git -C repo fetch --quiet origin && git -C repo reset --quiet --hard FETCH_HEAD; else git clone --quiet ${quote(info.remote)} repo; fi`,
       { inRepo: false },

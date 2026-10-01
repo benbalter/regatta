@@ -1,26 +1,32 @@
-// One container per attempt. Agent-written code and the repo's own test suite
-// run here, so nothing secret goes in: internet is off, and every HTTP(S)
-// request leaves through the Egress worker, which allowlists hosts and adds
-// the Artifacts token on the way out. The container never sees a credential.
+// Sandboxes run untrusted code: the repo's own and whatever agents write.
+// Nothing secret goes in. Internet is off, and every HTTP(S) request leaves
+// through the Egress worker below, which decides per request what's allowed
+// and adds credentials on the way out. A container never sees a credential.
+//
+// Each sandbox has a role (see src/runtime.ts): agent, publish, verify, warm,
+// land, sync, why. Roles differ only in the EgressProps they get.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { matchRepoAuth } from "./git-plan";
-import { CACHE_HOST, isCacheKey } from "./cache";
+import { CACHE_HOST, cacheObjectKey, isCacheKey } from "./cache";
+import { egressDecision } from "./egress-policy";
 
 export interface EgressProps {
-  /** Hosts the sandbox may reach directly (package registries). */
+  /** Hosts the sandbox may read from (package registries, toolchain downloads). */
   allow: string[];
   /** Git remotes (URL prefix) -> repo token secret to inject as basic auth. */
   repoAuth: Record<string, string>;
   /** Fake-Artifacts host -> local URL to route it to (dev only). */
   rewrite: Record<string, string>;
+  /** Dependency cache: the namespace is fixed here, never chosen by the sandbox. */
+  cache: { namespace: string; write: boolean } | null;
 }
 
 export class Egress extends WorkerEntrypoint<Env, EgressProps> {
   async fetch(req: Request): Promise<Response> {
-    const { allow, repoAuth, rewrite } = this.ctx.props;
+    const { allow, repoAuth, rewrite, cache } = this.ctx.props;
     const url = new URL(req.url);
-    if (url.hostname === CACHE_HOST) return this.cache(req, url);
+    if (url.hostname === CACHE_HOST) return cache ? this.cache(req, url, cache) : deny("no cache for this sandbox");
     const secret = matchRepoAuth(`${url.origin}${url.pathname}`, repoAuth);
     if (secret) {
       const headers = new Headers(req.headers);
@@ -28,29 +34,33 @@ export class Egress extends WorkerEntrypoint<Env, EgressProps> {
       const target = rewrite[url.host] ? new URL(url.pathname + url.search, rewrite[url.host]) : url;
       return fetch(new Request(target, { method: req.method, headers, body: req.body, redirect: "manual" }));
     }
-    if (allow.includes(url.hostname)) return fetch(req);
-    return new Response(`regatta egress: ${url.hostname} is not allowed`, { status: 403 });
+    const decision = egressDecision(req.method, url, allow);
+    return decision === "allow" ? fetch(req) : deny(decision);
   }
 
-  // The dependency cache, served from R2. Only well-formed keys; no listing or deletes.
-  private async cache(req: Request, url: URL): Promise<Response> {
+  // The dependency cache, served from R2 under this sandbox's namespace.
+  private async cache(req: Request, url: URL, cache: NonNullable<EgressProps["cache"]>): Promise<Response> {
     if (!isCacheKey(url.pathname)) return new Response("bad cache key", { status: 400 });
-    const key = url.pathname.slice(1);
+    const key = cacheObjectKey(cache.namespace, url.pathname);
     if (req.method === "GET" || req.method === "HEAD") {
       const obj = await this.env.CACHE.get(key);
       if (!obj) return new Response(null, { status: 404 });
       return new Response(req.method === "HEAD" ? null : obj.body, { headers: { "content-length": String(obj.size) } });
     }
     if (req.method === "PUT") {
+      // Only the warm sandbox (the repo's own setup on its base branch) writes,
+      // so agent-written code can't poison what other boats restore.
+      if (!cache.write) return deny("this sandbox's cache is read-only");
       const size = Number(req.headers.get("content-length"));
-      // Bound what a sandbox can write: one tarball, no larger than 1 GB.
-      if (!size || size > 1_000_000_000) return new Response("missing or oversized body", { status: 413 });
+      if (!size || size > 2_000_000_000) return new Response("missing or oversized body", { status: 413 });
       await this.env.CACHE.put(key, req.body);
       return new Response(null, { status: 201 });
     }
     return new Response("method not allowed", { status: 405 });
   }
 }
+
+const deny = (why: string) => new Response(`regatta egress: ${why}`, { status: 403 });
 
 export interface ExecResult {
   exitCode: number;
@@ -103,12 +113,38 @@ export class Sandbox extends DurableObject<Env> {
   }
 
   async writeFile(path: string, content: string): Promise<ExecResult> {
-    // base64 keeps arbitrary content intact through the shell.
-    const b64 = toBase64(new TextEncoder().encode(content));
-    // Absolute paths may be written before the repo is cloned, so run them from /workspace.
-    return this.sh(`mkdir -p "$(dirname -- ${quote(path)})" && printf %s ${quote(b64)} | base64 -d > ${quote(path)}`, {
-      inRepo: !path.startsWith("/"),
-    });
+    // base64 keeps arbitrary content intact through the shell, written in
+    // chunks: Linux caps a single argv string at 128 KiB.
+    const b64 = Buffer.from(content, "utf8").toString("base64");
+    const inRepo = !path.startsWith("/"); // absolute paths may be written before the clone
+    const tmp = `${path}.b64`;
+    let r = await this.sh(`mkdir -p "$(dirname -- ${quote(path)})" && : > ${quote(tmp)}`, { inRepo });
+    for (let i = 0; i < b64.length && r.exitCode === 0; i += 96_000) {
+      r = await this.sh(`printf %s ${quote(b64.slice(i, i + 96_000))} >> ${quote(tmp)}`, { inRepo });
+    }
+    if (r.exitCode !== 0) return r;
+    return this.sh(`base64 -d < ${quote(tmp)} > ${quote(path)} && rm -f ${quote(tmp)}`, { inRepo });
+  }
+
+  /**
+   * Read a file exactly, or report that it's over the cap. Never truncates:
+   * a clipped patch would apply as a different change than the agent made.
+   */
+  async readFileExact(path: string, maxBytes: number): Promise<{ content: string } | { tooLarge: number } | null> {
+    const size = Number((await this.raw(["sh", "-c", `wc -c < ${quote(path)}`])).stdout.trim());
+    if (!Number.isFinite(size) || size < 0) return null;
+    if (size > maxBytes) return { tooLarge: size };
+    const p = await this.container().exec(["cat", "--", path], { cwd: "/workspace" });
+    const o = await p.output();
+    if (o.exitCode !== 0) return null;
+    const content = new TextDecoder().decode(o.stdout);
+    return content.length === 0 && size > 0 ? null : { content };
+  }
+
+  /** Start from a clean container: every step that runs untrusted code calls this first. */
+  async fresh(egress: EgressProps): Promise<void> {
+    await this.destroy();
+    await this.prepare(egress);
   }
 
   /** True when the container is up and still has the repo checkout. */
@@ -128,11 +164,6 @@ export class Sandbox extends DurableObject<Env> {
   }
 }
 
-function toBase64(bytes: Uint8Array): string {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
-}
 
 import { quote } from "./git-plan";
 export { quote };

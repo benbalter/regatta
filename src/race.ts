@@ -9,16 +9,19 @@ import type { AttemptReport } from "./schemas";
 import { clusterOutcomes, defaultWinners, errorSignature } from "./cluster";
 import { DEFAULT_POLICY, evaluate } from "./policy";
 import { repoHost } from "./repo-host";
-import { relaunchAfterHalt } from "./race-logic";
+import { baseRepoName } from "./identity";
+import { matchingFixes, relaunchAfterHalt } from "./race-logic";
 import { escalateForConflicts, overlapping, undeclared } from "./claims";
+import { untrusted } from "./git-plan";
 
 // Types come from the API contract (src/schemas.ts) so spec and code can't drift.
 export type { AttemptRecord, AttemptState, ClusterView, Fix, Halt, RaceSpec, RaceView, TargetSpec } from "./schemas";
 import type { AttemptRecord, ClaimConflict, DecisionDoc, FeedEvent, RaceLiveState, Fix, Halt, RaceSpec, RaceView, SyncStatus, TargetSpec } from "./schemas";
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
-// Base repos are shared across races so each target is imported once.
-export const baseName = (t: TargetSpec) => `base-${slug(t.name)}`;
+// Base repos are shared across races (one import per repo), named from the
+// repo's canonical URL, never its display name. See src/identity.ts.
+export const baseName = (t: TargetSpec) => baseRepoName(t.url, t.branch);
 const MAX_RETRIES_PER_TARGET = 2;
 
 async function shortHash(s: string): Promise<string> {
@@ -116,13 +119,13 @@ export class Race extends Agent<Env, RaceLiveState> {
 
     const host = repoHost(this.env);
     for (const t of spec.targets) {
-      const base = baseName(t);
+      const base = await baseName(t);
       const fresh = (await host.info(base)).status === "missing";
       if (fresh) await host.importRepo(base, t.url, t.branch);
       this.setSync(t.name, { status: "syncing", detail: "" });
       await this.env.SYNC.create({
         id: `${id}-sync-${slug(t.name)}`,
-        params: { raceId: id, target: t.name, base, url: t.url, branch: t.branch, fresh },
+        params: { raceId: id, target: t.name, base, url: t.url, branch: t.branch, fresh, setup: t.setup ?? spec.setup ?? "" },
       });
     }
   }
@@ -131,10 +134,11 @@ export class Race extends Agent<Env, RaceLiveState> {
   async synced(target: string, status: SyncStatus, detail: string): Promise<void> {
     this.setSync(target, { status, detail });
     this.event("sync", `${status}${detail ? `: ${detail.split("\n")[0]}` : ""}`, { target });
-    if (status === "conflict" || status === "failed" || this.halted()) return;
+    if (status === "conflict" || status === "failed" || this.haltedFor(target)) return;
     const t = this.spec().targets.find((x) => x.name === target);
     if (!t) return;
-    for (let n = 1; n <= this.spec().k; n++) await this.launch(t.name, baseName(t), `a${n}`, null, []);
+    const base = await baseName(t);
+    for (let n = 1; n <= this.spec().k; n++) await this.launch(t.name, base, `a${n}`, null, []);
   }
 
   private setSync(target: string, v: { status: SyncStatus | "syncing"; detail: string }) {
@@ -160,6 +164,7 @@ export class Race extends Agent<Env, RaceLiveState> {
       hints,
       report: null,
       announcement: null,
+      candidateFix: null,
       undeclared: [],
       landedSha: null,
       landError: null,
@@ -167,7 +172,18 @@ export class Race extends Agent<Env, RaceLiveState> {
     };
     this.save(rec);
     this.event(retryOf ? "retry" : "launch", retryOf ? `relaunched after ${retryOf}${hints.length ? `, seeded with ${hints.length} fix(es) from the blackboard` : ""}` : "agent launched", { target, attempt: attemptId });
-    const params: AttemptParams = { raceId: id, attemptId, target, base, fork: rec.fork, intent: spec.intent, check: spec.check, hints };
+    const t = spec.targets.find((x) => x.name === target);
+    const params: AttemptParams = {
+      raceId: id,
+      attemptId,
+      target,
+      base,
+      fork: rec.fork,
+      intent: spec.intent,
+      setup: t?.setup ?? spec.setup ?? "",
+      check: t?.check ?? spec.check,
+      hints,
+    };
     await this.env.ATTEMPT.create({ id: attemptId, params });
   }
 
@@ -182,6 +198,9 @@ export class Race extends Agent<Env, RaceLiveState> {
     this.event("finish", outcome + (rec.undeclared.length ? ` (undeclared: ${rec.undeclared.join(", ")})` : ""), { target: r.target, attempt: r.attemptId });
     // Only green work still needs its claim, until it lands.
     if (!r.green) await this.index().releaseClaim(r.attemptId);
+    // A fix found mid-attempt reaches the blackboard only once a fresh verify
+    // sandbox reproduced the attempt green. Unverified text never propagates.
+    if (r.green && rec.candidateFix) await this.postFix({ ...rec.candidateFix, attemptId: rec.id, target: rec.target, verified: true });
     await this.maybeWriteDecisionDocs();
     if (!r.green && !r.error) await this.retryWithFixes(errorSignature(r.failureLog));
   }
@@ -247,8 +266,16 @@ export class Race extends Agent<Env, RaceLiveState> {
   }
 
   /** A feed line from a workflow or the event consumer. */
-  async note(kind: "cache" | "launch", target: string, attemptId: string, text: string): Promise<void> {
-    this.event(kind, text, { target, attempt: attemptId });
+  async note(kind: "cache" | "launch" | "warm", target: string, attemptId: string, text: string): Promise<void> {
+    this.event(kind, text, { target: target || undefined, attempt: attemptId || undefined });
+  }
+
+  /** A fix an agent found mid-attempt, held until verification. */
+  async candidateFix(attemptId: string, fix: NonNullable<AttemptRecord["candidateFix"]>): Promise<void> {
+    const rec = this.attempt(attemptId);
+    if (!rec) return;
+    rec.candidateFix = fix;
+    this.save(rec);
   }
 
   async announced(attemptId: string): Promise<boolean> {
@@ -256,21 +283,33 @@ export class Race extends Agent<Env, RaceLiveState> {
   }
 
   // --- the andon cord ---------------------------------------------------------
-  // Any agent or human can stop the line. Running attempts halt at their next
-  // step, nothing new launches, nothing lands, and the reason is on record.
+  // Anyone can stop the line, and the reason goes on record. Humans can stop a
+  // whole race; an agent can stop only its own repo, so one hostile repo can't
+  // take the fleet down. Stopped work halts at its next step and doesn't land.
 
   async halt(h: Omit<Halt, "at">): Promise<void> {
-    if (this.halted()) return;
-    this.setMeta("halt", JSON.stringify({ ...h, at: new Date().toISOString() }));
-    this.event("halt", `${h.by} stopped the line: ${h.reason}`, {});
-    this.logHalt({ ...h, at: new Date().toISOString() }, "halt");
+    const at = new Date().toISOString();
+    if (h.target) {
+      const repos = this.repoHalts();
+      if (repos[h.target] || this.halted()) return;
+      repos[h.target] = { ...h, at };
+      this.setMeta("repoHalts", JSON.stringify(repos));
+      this.event("halt", `${h.by} stopped ${h.target}: ${h.reason}`, { target: h.target });
+    } else {
+      if (this.halted()) return;
+      this.setMeta("halt", JSON.stringify({ ...h, at }));
+      this.event("halt", `${h.by} stopped the line: ${h.reason}`, {});
+    }
+    this.logHalt({ ...h, at }, "halt");
   }
 
   async resume(by: string): Promise<string[]> {
     const h = this.halted();
-    if (!h) return [];
-    this.db.exec("DELETE FROM meta WHERE k = 'halt'");
-    this.logHalt({ by, reason: `resumed after: ${h.reason}`, at: new Date().toISOString() }, "resume");
+    const repos = this.repoHalts();
+    if (!h && !Object.keys(repos).length) return [];
+    this.db.exec("DELETE FROM meta WHERE k IN ('halt', 'repoHalts')");
+    const what = h ? h.reason : Object.keys(repos).join(", ");
+    this.logHalt({ by, reason: `resumed after: ${what}`, at: new Date().toISOString() }, "resume");
     this.event("resume", `${by} released the line`, {});
     // Restarting the line restarts the work it stopped.
     const relaunched: string[] = [];
@@ -281,9 +320,19 @@ export class Race extends Agent<Env, RaceLiveState> {
     return relaunched;
   }
 
+  /** The race-wide halt, if any. */
   halted(): Halt | null {
     const v = this.meta("halt");
     return v ? JSON.parse(v) : null;
+  }
+
+  /** What stops this repo: the race-wide halt, or one on the repo alone. */
+  haltedFor(target: string): Halt | null {
+    return this.halted() ?? this.repoHalts()[target] ?? null;
+  }
+
+  private repoHalts(): Record<string, Halt> {
+    return JSON.parse(this.meta("repoHalts") ?? "{}");
   }
 
   private logHalt(h: Halt, kind: "halt" | "resume") {
@@ -301,18 +350,7 @@ export class Race extends Agent<Env, RaceLiveState> {
   }
 
   async lookup(error: string): Promise<Fix[]> {
-    const sig = errorSignature(error);
-    const all = this.fixes();
-    const exact = all.filter((f) => f.signature === sig);
-    if (exact.length) return exact.slice(-3);
-    // Fall back to fixes whose signature shares most words with the query.
-    const words = new Set(sig.toLowerCase().split(/\W+/).filter((w) => w.length > 3));
-    return all
-      .map((f) => ({ f, score: f.signature.toLowerCase().split(/\W+/).filter((w) => words.has(w)).length }))
-      .filter((x) => x.score >= 2)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3)
-      .map((x) => x.f);
+    return matchingFixes(errorSignature(error), this.fixes()).slice(0, 3);
   }
 
   // When a red attempt's failure matches a posted fix, start a fresh attempt
@@ -320,7 +358,7 @@ export class Race extends Agent<Env, RaceLiveState> {
   // agent's solution propagates to every repo that hit the same wall.
   private async retryWithFixes(signature: string) {
     if (this.halted()) return;
-    const fixes = this.fixes().filter((f) => f.signature === signature);
+    const fixes = matchingFixes(signature, this.fixes());
     if (!fixes.length) return;
     const attempts = this.attempts();
     const byTarget = new Map<string, AttemptRecord[]>();
@@ -330,15 +368,15 @@ export class Race extends Agent<Env, RaceLiveState> {
       // Re-read just before deciding: an earlier launch in this loop awaited
       // the Workflow binding, and another event may have changed this target.
       const list = this.attempts().filter((a) => a.target === target);
-      if (list.some((a) => a.state === "running" || a.report?.green)) continue;
-      const red = list.filter((a) => a.report && errorSignature(a.report.failureLog) === signature);
+      if (this.haltedFor(target) || list.some((a) => a.state === "running" || a.report?.green)) continue;
+      const red = list.filter((a) => a.report && matchingFixes(errorSignature(a.report.failureLog), fixes).length);
       if (!red.length) continue;
       const retries = list.filter((a) => a.retryOf).length;
       if (retries >= MAX_RETRIES_PER_TARGET) continue;
       const hints = fixes
         .filter((f) => f.target !== target)
         .slice(-2)
-        .map((f) => `${f.target} hit "${f.signature}" and fixed it with:\n${f.diff}`);
+        .map((f) => `${f.target} hit "${f.signature}" and fixed it (reproduced green in a fresh sandbox):\n${untrusted(`fix from ${f.target}`, f.diff)}`);
       if (!hints.length) continue;
       await this.launch(target, red[0].base, `r${retries + 1}`, red[0].id, hints);
     }
@@ -384,6 +422,15 @@ export class Race extends Agent<Env, RaceLiveState> {
       fixes: this.fixes(),
       approved: JSON.parse(this.meta("approved") ?? "[]"),
       halt: this.halted(),
+      repoHalts: this.repoHalts(),
+      usage: attempts.reduce(
+        (u, a) => ({
+          inputTokens: u.inputTokens + (a.report?.usage?.inputTokens ?? 0),
+          outputTokens: u.outputTokens + (a.report?.usage?.outputTokens ?? 0),
+          cacheReadTokens: u.cacheReadTokens + (a.report?.usage?.cacheReadTokens ?? 0),
+        }),
+        { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
+      ),
       feed: this.feed(),
       decisionDocs: this.docs(),
       sync: JSON.parse(this.meta("sync") ?? "{}"),
@@ -410,6 +457,7 @@ export class Race extends Agent<Env, RaceLiveState> {
     for (const [target, attemptId] of Object.entries(chosen)) {
       const rec = this.attempt(attemptId);
       if (!rec || rec.target !== target || !rec.report?.green || !rec.report.headSha) continue;
+      if (this.haltedFor(target)) continue; // a stopped repo doesn't land
       if (rec.state === "landing" || rec.state === "landed") continue;
       rec.state = "landing";
       this.save(rec);

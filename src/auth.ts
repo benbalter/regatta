@@ -7,6 +7,7 @@
 // 3. The REGATTA_ADMIN_TOKEN bearer token, for API and MCP clients.
 // Otherwise fail closed.
 
+import { timingSafeEqual } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 
 export type Auth =
@@ -21,10 +22,9 @@ const jwksFor = (team: string) => {
 };
 
 function sameSecret(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }
 
 /** `keys` exists for tests; production resolves the team's published Access certs. */

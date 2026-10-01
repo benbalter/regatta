@@ -30,8 +30,9 @@ export function errorSignature(log: string): string {
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
+  // Words failing tools print in most languages and test runners.
   const interesting =
-    lines.find((l) => /\b(error|failed|failure|exception|cannot|could not|undefined method|uninitialized constant)\b/i.test(l)) ??
+    lines.find((l) => /\b(error|errors|failed|failure|failures|exception|panic|fatal|traceback|cannot|could not|not found|undefined|assert(ion)?)\b/i.test(l)) ??
     lines.at(-1) ??
     "";
   return interesting
@@ -46,12 +47,19 @@ export function errorSignature(log: string): string {
     .slice(0, 200);
 }
 
-// Repo-specific names (the gem's own lib/<name>/…) shouldn't split a cluster,
-// so collapse a leading lib/<x>/ or spec/<x>/ segment.
-export function shapeSignature(files: string[]): string {
-  return [...new Set(files.map((f) => f.replace(/^(lib|spec|test)\/[^/]+\//, "$1/*/").replace(/^[^/]+\.gemspec$/, "*.gemspec")))]
-    .sort()
-    .join(",");
+// A repo's own name (its package directory, its manifest) shouldn't split a
+// cluster: `lib/jekyll-foo/x.rb` in jekyll-foo and `lib/jekyll-bar/x.rb` in
+// jekyll-bar, or `packages/foo/src/a.ts` in foo, are the same shape of change.
+// Matching is on the normalized repo name, so it works for any ecosystem.
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+export function shapeSignature(files: string[], repoName = ""): string {
+  const own = norm(repoName);
+  const collapse = (segment: string) => {
+    const dot = segment.indexOf(".", 1);
+    const stem = dot > 0 ? segment.slice(0, dot) : segment;
+    return own && norm(stem) === own ? `*${dot > 0 ? segment.slice(dot) : ""}` : segment;
+  };
+  return [...new Set(files.map((f) => f.split("/").map(collapse).join("/")))].sort().join(",");
 }
 
 export function clusterOutcomes(outcomes: AttemptOutcome[]): Cluster[] {
@@ -70,7 +78,7 @@ export function clusterOutcomes(outcomes: AttemptOutcome[]): Cluster[] {
       kind = "no-op";
       label = "green, no changes needed";
     } else {
-      const shape = shapeSignature(o.changedFiles);
+      const shape = shapeSignature(o.changedFiles, o.target);
       key = `green:${shape}`;
       kind = "green";
       label = `green, changed ${shape}`;

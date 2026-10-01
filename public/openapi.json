@@ -100,11 +100,17 @@
             "default": 2,
             "description": "Competing agent forks per repo"
           },
+          "setup": {
+            "type": "string",
+            "maxLength": 1000,
+            "default": "",
+            "description": "Shell command that installs dependencies, e.g. `npm ci` or `bundle install`; repos can override"
+          },
           "check": {
             "type": "string",
             "minLength": 1,
             "maxLength": 1000,
-            "description": "Shell command that defines passing, e.g. `bundle exec rake`"
+            "description": "Shell command that defines passing, e.g. `npm test`; repos can override"
           },
           "policy": {
             "$ref": "#/components/schemas/Policy"
@@ -130,6 +136,16 @@
           },
           "branch": {
             "type": "string"
+          },
+          "setup": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Overrides the race's setup command for this repo"
+          },
+          "check": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Overrides the race's check command for this repo"
           }
         },
         "required": [
@@ -197,6 +213,23 @@
           "halt": {
             "$ref": "#/components/schemas/Halt"
           },
+          "repoHalts": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Halt"
+            },
+            "description": "Repos an agent stopped, without stopping the race"
+          },
+          "usage": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Usage"
+              },
+              {
+                "description": "Model tokens across the race"
+              }
+            ]
+          },
           "feed": {
             "type": "array",
             "items": {
@@ -257,6 +290,8 @@
           "fixes",
           "approved",
           "halt",
+          "repoHalts",
+          "usage",
           "feed",
           "decisionDocs",
           "sync"
@@ -308,6 +343,33 @@
           "announcement": {
             "$ref": "#/components/schemas/Announcement"
           },
+          "candidateFix": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "signature": {
+                "type": "string"
+              },
+              "errorLog": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              },
+              "rationale": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "signature",
+              "errorLog",
+              "diff",
+              "rationale"
+            ],
+            "description": "A fix the agent found mid-attempt; shared only if the verify sandbox reproduces it green"
+          },
           "undeclared": {
             "type": "array",
             "items": {
@@ -341,6 +403,7 @@
           "hints",
           "report",
           "announcement",
+          "candidateFix",
           "undeclared",
           "landedSha",
           "landError",
@@ -404,6 +467,9 @@
           "halted": {
             "type": "boolean",
             "description": "Stopped because the andon cord was pulled"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
           }
         },
         "required": [
@@ -421,6 +487,26 @@
           "headSha",
           "turns"
         ]
+      },
+      "Usage": {
+        "type": "object",
+        "properties": {
+          "inputTokens": {
+            "type": "integer"
+          },
+          "outputTokens": {
+            "type": "integer"
+          },
+          "cacheReadTokens": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "cacheReadTokens"
+        ],
+        "description": "Model tokens an attempt used"
       },
       "Announcement": {
         "type": [
@@ -633,6 +719,13 @@
           },
           "createdAt": {
             "type": "string"
+          },
+          "verified": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Every blackboard fix was reproduced green in a fresh sandbox"
           }
         },
         "required": [
@@ -643,7 +736,8 @@
           "errorLog",
           "diff",
           "rationale",
-          "createdAt"
+          "createdAt",
+          "verified"
         ],
         "description": "A blackboard entry: one agent's fix, offered to every agent that hits the same error."
       },
@@ -662,6 +756,10 @@
           "at": {
             "type": "string",
             "format": "date-time"
+          },
+          "target": {
+            "type": "string",
+            "description": "Set when only one repo is stopped (an agent's cord); absent when the whole race is"
           }
         },
         "required": [
@@ -694,7 +792,8 @@
               "resume",
               "decision",
               "land",
-              "cache"
+              "cache",
+              "warm"
             ]
           },
           "target": {
@@ -1534,7 +1633,7 @@
           {
             "schema": {
               "type": "string",
-              "example": "base-jekyll-titles-from-headings"
+              "example": "base-my-repo-1a2b3c4d5e6f"
             },
             "required": true,
             "name": "repo",
@@ -1543,7 +1642,7 @@
           {
             "schema": {
               "type": "string",
-              "example": ".ruby-version"
+              "example": "README.md"
             },
             "required": true,
             "name": "path",

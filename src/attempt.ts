@@ -1,18 +1,31 @@
-// One agent attempt at one target: fork, clone into a sandbox, run the agent
-// loop, verify, commit with trailers, push to the fork, report. Every model
-// turn and tool batch is its own durable step.
+// One agent attempt at one repo, under a model where every repo and every
+// agent is untrusted:
+//
+//   agent    a fresh sandbox with a *read-only* clone. The agent explores,
+//            edits and runs the check there. Its only output is a patch.
+//   publish  a fresh git-only sandbox: applies the patch, commits it with the
+//            attempt's trailers and pushes to the fork. Runs no repo code, so
+//            the write token never meets untrusted code.
+//   verify   a fresh sandbox with a read-only clone of what was pushed: runs
+//            setup and the check. Only its exit code is trusted.
+//
+// The agent's container never grades its own work, never holds a write
+// token, and never decides what was changed (the Worker parses the patch).
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import type Anthropic from "@anthropic-ai/sdk";
 import { MAX_TURNS, kickoff, modelTurn, parseModel, systemPrompt } from "./agent";
 import { errorSignature } from "./cluster";
-import { repoHost, type RepoHost } from "./repo-host";
-import { egressFor, sandboxFor, waitReady } from "./runtime";
+import { repoHost } from "./repo-host";
+import { egressFor, sandboxFor, sandboxId, waitReady } from "./runtime";
 import { trailers } from "./trailers";
-import { commitPlan, commitSubject } from "./git-plan";
-import { parseCacheResult, restoreScript, saveScript } from "./cache";
+import { commitSubject, parsePatch, quote, untrusted } from "./git-plan";
+import { parseCacheResult, restoreScript } from "./cache";
+import { toolchainScript } from "./toolchain";
 import { FORK_READY } from "./events";
-import { quote } from "./git-plan";
+import type { AttemptReport, Usage } from "./schemas";
+
+export type { AttemptReport } from "./schemas";
 
 export interface AttemptParams {
   raceId: string;
@@ -21,24 +34,32 @@ export interface AttemptParams {
   base: string;
   fork: string;
   intent: string;
+  /** Install dependencies (optional); runs in agent and verify sandboxes. */
+  setup: string;
+  /** What passing means; only the verify sandbox's result counts. */
   check: string;
   hints: string[];
 }
 
-export type { AttemptReport } from "./schemas";
-import type { AttemptReport } from "./schemas";
-
-/** Thrown when the race's andon cord is pulled mid-attempt. */
+/** Thrown when the andon cord stops this repo (or the whole race). */
 class Halted extends Error {}
 
-const TOKEN_TTL = 3 * 60 * 60;
+const READ_TTL = 3 * 60 * 60;
+// Patches travel through Workflow step results (1 MiB max), so cap below that.
+// Over the cap the attempt goes red; a partial patch is never applied.
+const MAX_PATCH_BYTES = 900_000;
+const WORK = "/workspace";
+
+type Race = ReturnType<Env["Race"]["getByName"]>;
+type Box = ReturnType<typeof sandboxFor>;
 
 export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
   async run(event: WorkflowEvent<AttemptParams>, step: WorkflowStep) {
     const p = event.payload;
     const host = repoHost(this.env);
     const race = this.env.Race.getByName(p.raceId);
-    const sandbox = sandboxFor(this.env, p.attemptId);
+    const agentBox = sandboxFor(this.env, sandboxId(p.attemptId, "agent"));
+    const usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
 
     try {
       await waitReady(step, host, p.base, "base");
@@ -46,8 +67,8 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
         if ((await host.info(p.fork)).status === "missing") await host.fork(p.base, p.fork);
       });
       // With Artifacts events on, the Queue consumer wakes us when the fork is
-      // ready (events sent early are buffered). Polling stays as the fallback,
-      // and is the only path against the local fake.
+      // ready (events sent early are buffered). Polling is the fallback, and
+      // the only path against the local fake.
       if (this.env.ARTIFACTS_EVENTS === "on") {
         try {
           await step.waitForEvent("fork-ready", { type: FORK_READY, timeout: "3 minutes" });
@@ -57,43 +78,51 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
       }
       const fork = await waitReady(step, host, p.fork, "fork");
 
-      const { tokenId, baseSha } = await step.do("sandbox", async () => {
-        const token = await host.token(p.fork, "write", TOKEN_TTL);
+      // --- agent: untrusted work in a read-only checkout -------------------
+      const { baseSha } = await step.do("agent-sandbox", async () => {
+        const token = await host.token(p.fork, "read", READ_TTL);
         try {
-          await sandbox.prepare(egressFor(this.env, { [fork.remote]: token.secret }));
-          const r = await sandbox.sh(`rm -rf repo && git clone --quiet ${quote(fork.remote)} repo`, { inRepo: false });
-          if (r.exitCode !== 0) throw new Error(`clone failed: ${r.stderr}`);
-          // Diffs are taken against this, not the index, so a retried commit step reports the same change.
-          const base = (await sandbox.sh("git rev-parse HEAD")).stdout.trim();
-          // Warm start: restore installed gems from R2 if this dependency set has been seen.
-          const cache = parseCacheResult((await sandbox.sh(restoreScript, { timeoutSeconds: 300 })).stdout);
-          await race.note("cache", p.target, p.attemptId, cache.status === "hit" ? "gems restored from the R2 cache" : "cold start: no cached gems for these dependencies yet");
-          return { tokenId: token.id, baseSha: base };
-        } catch (e) {
-          // Each retry mints a new token; don't leave the failed one live.
+          await agentBox.fresh(egressFor(this.env, "agent", { repoAuth: { [fork.remote]: token.secret }, cacheNamespace: p.base }));
+          const clone = await agentBox.sh(`rm -rf repo && git clone --quiet ${quote(fork.remote)} repo`, { inRepo: false });
+          if (clone.exitCode !== 0) throw new Error(`clone failed: ${clone.stderr}`);
+          const sha = (await agentBox.sh("git rev-parse HEAD")).stdout.trim();
+          await this.prepareToolchain(agentBox, p, race, "agent");
+          return { baseSha: sha };
+        } finally {
+          // The clone is done; the agent never needs repo access again.
           await host.revokeToken(p.fork, token.id);
-          throw e;
         }
       });
 
-      const result = await this.agentLoop(p, step, sandbox, race);
+      const result = await this.agentLoop(p, step, agentBox, race, usage);
 
-      const report = await step.do("commit", async () => {
-        await this.requireSandbox(sandbox);
-        const verify = await sandbox.sh(p.check, { timeoutSeconds: 900 });
-        const green = verify.exitCode === 0;
-        // Only a passing install is worth caching for the next boat.
-        if (green) {
-          const saved = parseCacheResult((await sandbox.sh(saveScript, { timeoutSeconds: 300 })).stdout);
-          if (saved.status === "saved") await race.note("cache", p.target, p.attemptId, "saved installed gems to the R2 cache for the next boat");
-        }
-        await sandbox.sh("git add -A");
-        const staged = (await sandbox.sh("git diff --cached --quiet")).exitCode !== 0;
-        const headMsg = (await sandbox.sh("git log -1 --format=%B")).stdout;
-        const ahead = Number((await sandbox.sh(`git rev-list --count ${quote(`origin/${fork.defaultBranch}`)}..HEAD`)).stdout.trim()) > 0;
-        const plan = commitPlan({ staged, headIsOurs: headMsg.includes(`Regatta-Attempt: ${p.attemptId}`), aheadOfOrigin: ahead });
+      const exported = await step.do("export-patch", async () => {
+        await this.requireSandbox(agentBox);
+        await agentBox.sh(`git add -A && git diff --cached --binary ${quote(baseSha)} > ${WORK}/out.patch; git reset --quiet`);
+        const read = await agentBox.readFileExact(`${WORK}/out.patch`, MAX_PATCH_BYTES);
+        await agentBox.destroy();
+        if (!read) throw new Error("could not read the agent's patch");
+        if ("tooLarge" in read) return { patch: "", tooLarge: read.tooLarge };
+        return { patch: read.content, tooLarge: 0 };
+      });
+      if (exported.tooLarge) throw new Error(`patch is ${exported.tooLarge} bytes, over the ${MAX_PATCH_BYTES}-byte limit; nothing was applied`);
+      const { changedFiles, diffSize } = parsePatch(exported.patch);
 
-        if (plan.commit) {
+      // --- publish: trusted git-only sandbox, the only place a write token exists ---
+      const headSha = await step.do("publish", async () => {
+        if (!exported.patch.trim()) return baseSha; // nothing to publish
+        const box = sandboxFor(this.env, sandboxId(p.attemptId, "publish"));
+        const token = await host.token(p.fork, "write", 1800);
+        try {
+          await box.fresh(egressFor(this.env, "publish", { repoAuth: { [fork.remote]: token.secret } }));
+          const clone = await box.sh(`rm -rf repo && git clone --quiet ${quote(fork.remote)} repo`, { inRepo: false });
+          if (clone.exitCode !== 0) throw new Error(`clone failed: ${clone.stderr}`);
+          // Idempotent: a retry after a successful push finds its own commit at the head.
+          const head = await box.sh("git log -1 --format=%H%n%B");
+          if (head.stdout.includes(`Regatta-Attempt: ${p.attemptId}`)) return head.stdout.split("\n")[0].trim();
+          await box.writeFile(`${WORK}/in.patch`, exported.patch);
+          const apply = await box.sh(`git apply --check --binary ${WORK}/in.patch && git apply --binary --index ${WORK}/in.patch`);
+          if (apply.exitCode !== 0) throw new Error(`patch does not apply cleanly: ${apply.stderr.slice(0, 500)}`);
           const msg = `${commitSubject(result.summary, p.intent)}\n\n${trailers({
             race: p.raceId,
             attempt: p.attemptId,
@@ -102,49 +131,56 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
             alternatives: result.alternatives || "(none given)",
             rationale: result.rationale || "(none given)",
           })}`;
-          // Via a file, so agent-written text can't break shell quoting.
-          await sandbox.writeFile("/workspace/.commit-msg", msg);
-          const commit = await sandbox.sh("git -c user.name=regatta -c user.email=regatta@localhost commit --quiet -F /workspace/.commit-msg");
+          await box.writeFile(`${WORK}/commit-msg`, msg);
+          const commit = await box.sh(`git commit --quiet --no-verify -F ${WORK}/commit-msg`);
           if (commit.exitCode !== 0) throw new Error(`commit failed: ${commit.stderr}`);
-        }
-        if (plan.push) {
-          const push = await sandbox.sh(`git push --quiet origin HEAD:${quote(fork.defaultBranch)}`);
+          const push = await box.sh(`git push --quiet origin HEAD:${quote(fork.defaultBranch)}`);
           if (push.exitCode !== 0) throw new Error(`push failed: ${push.stderr}`);
+          return (await box.sh("git rev-parse HEAD")).stdout.trim();
+        } finally {
+          await host.revokeToken(p.fork, token.id);
+          await box.destroy();
         }
-
-        // Everything below compares against the clone's base, so it is stable across retries.
-        const range = `${baseSha}..HEAD`;
-        const changedFiles = (await sandbox.sh(`git diff --name-only ${range}`)).stdout.split("\n").filter(Boolean);
-        const diffSize = (await sandbox.sh(`git diff --numstat ${range}`)).stdout
-          .split("\n")
-          .filter(Boolean)
-          .reduce((n, l) => n + l.split("\t").slice(0, 2).reduce((a, x) => a + (Number(x) || 0), 0), 0);
-        const diff = (await sandbox.sh(`git diff ${range}`)).stdout;
-        const head = (await sandbox.sh("git rev-parse HEAD")).stdout.trim();
-        return {
-          attemptId: p.attemptId,
-          target: p.target,
-          green,
-          changedFiles,
-          failureLog: green ? "" : (verify.stdout + verify.stderr).slice(-4000),
-          diffSize,
-          diff: diff.slice(0, 60_000),
-          summary: result.summary,
-          rationale: result.rationale,
-          problem: result.problem,
-          alternatives: result.alternatives,
-          headSha: head === baseSha ? null : head,
-          turns: result.turns,
-        } satisfies AttemptReport;
       });
 
+      // --- verify: a fresh sandbox decides pass/fail -------------------------
+      const verdict = await step.do("verify", async () => {
+        const box = sandboxFor(this.env, sandboxId(p.attemptId, "verify"));
+        const token = await host.token(p.fork, "read", 1800);
+        try {
+          await box.fresh(egressFor(this.env, "verify", { repoAuth: { [fork.remote]: token.secret }, cacheNamespace: p.base }));
+          const clone = await box.sh(`rm -rf repo && git clone --quiet ${quote(fork.remote)} repo && cd repo && git checkout --quiet ${quote(headSha)}`, {
+            inRepo: false,
+          });
+          if (clone.exitCode !== 0) throw new Error(`clone failed: ${clone.stderr}`);
+          await host.revokeToken(p.fork, token.id); // nothing below needs the repo
+          await this.prepareToolchain(box, p, race, "verify");
+          const r = await box.sh(p.check, { timeoutSeconds: 900 });
+          return { green: r.exitCode === 0, log: (r.stdout + r.stderr).slice(-4000) };
+        } finally {
+          await box.destroy();
+        }
+      });
+
+      const report: AttemptReport = {
+        attemptId: p.attemptId,
+        target: p.target,
+        green: verdict.green,
+        changedFiles,
+        failureLog: verdict.green ? "" : verdict.log,
+        diffSize,
+        diff: exported.patch.slice(0, 60_000),
+        summary: result.summary,
+        rationale: result.rationale,
+        problem: result.problem,
+        alternatives: result.alternatives,
+        headSha: headSha === baseSha ? null : headSha,
+        turns: result.turns,
+        usage,
+      };
       await step.do("report", () => race.report(report));
-      await step.do("cleanup", async () => {
-        await host.revokeToken(p.fork, tokenId);
-        await sandbox.destroy();
-      });
     } catch (e) {
-      // Report infrastructure failures and halts too, so the race never waits forever.
+      // Report failures and halts too, so the race never waits forever.
       const halted = e instanceof Halted;
       await step.do("report-error", () =>
         race.report({
@@ -163,28 +199,34 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
           turns: 0,
           error: (e as Error).message,
           halted,
+          usage,
         }),
       );
-      await step.do("cleanup-after-error", () => sandbox.destroy());
+      await step.do("cleanup-after-error", () => agentBox.destroy());
     }
   }
 
-  private async agentLoop(
-    p: AttemptParams,
-    step: WorkflowStep,
-    sandbox: ReturnType<typeof sandboxFor>,
-    race: ReturnType<Env["Race"]["getByName"]>,
-  ) {
+  /** Toolchains (mise), then the cache (read-only here), then setup. */
+  private async prepareToolchain(box: Box, p: AttemptParams, race: Race, role: "agent" | "verify") {
+    const cache = parseCacheResult((await box.sh(restoreScript(p.setup), { timeoutSeconds: 300 })).stdout);
+    const tools = (await box.sh(toolchainScript(), { timeoutSeconds: 600 })).stdout.trim().split("\n").at(-1) ?? "";
+    if (role === "agent") {
+      await race.note("cache", p.target, p.attemptId, `${cache.status === "hit" ? "warm start from the R2 cache" : "cold start"}; ${tools}`);
+    }
+    if (p.setup.trim()) await box.sh(p.setup, { timeoutSeconds: 900 });
+  }
+
+  private async agentLoop(p: AttemptParams, step: WorkflowStep, sandbox: Box, race: Race, usage: Usage) {
     const model = parseModel(this.env.REGATTA_AGENT_MODEL);
-    const system = systemPrompt(p.check);
+    const system = systemPrompt(p.check, p.setup);
     const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: kickoff(p.intent, p.target, p.hints) }];
     const ledger = { summary: "", rationale: "", problem: "", alternatives: "" };
     let nudged = false;
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
-      // The andon cord: anyone can stop the line, and every turn honors it.
+      // The andon cord: honored before every turn, for this repo or the whole race.
       const halt = await step.do(`gate-${turn}`, async () => {
-        const h = await race.halted();
+        const h = await race.haltedFor(p.target);
         return h ? `${h.reason} (by ${h.by})` : "";
       });
       if (halt) throw new Halted(halt);
@@ -193,9 +235,12 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
       const res = JSON.parse(
         await step.do(`turn-${turn}`, { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } }, async () => {
           const r = await modelTurn(this.env, model, system, messages);
-          return JSON.stringify({ content: r.content, stop_reason: r.stop_reason });
+          return JSON.stringify({ content: r.content, stop_reason: r.stop_reason, usage: r.usage });
         }),
-      ) as { content: Anthropic.Beta.BetaContentBlock[]; stop_reason: string };
+      ) as { content: Anthropic.Beta.BetaContentBlock[]; stop_reason: string; usage?: Anthropic.Beta.BetaUsage };
+      usage.inputTokens += res.usage?.input_tokens ?? 0;
+      usage.outputTokens += res.usage?.output_tokens ?? 0;
+      usage.cacheReadTokens += res.usage?.cache_read_input_tokens ?? 0;
 
       if (res.stop_reason === "refusal") throw new Error("model declined the task");
       messages.push({ role: "assistant", content: res.content });
@@ -215,7 +260,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
       }
 
       const results = JSON.parse(
-        // No retries: tools have side effects (blackboard posts, the andon cord).
+        // No retries: tools have side effects (claims, the andon cord).
         // Errors inside a tool go back to the model as is_error results instead.
         await step.do(`tools-${turn}`, { retries: { limit: 0, delay: "1 second" } }, async () => {
           await this.requireSandbox(sandbox);
@@ -230,20 +275,14 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
   }
 
   // Model turns replay from cached steps, but the container's checkout does
-  // not survive a restart. Fail the attempt with a clear reason instead of
-  // letting every later tool error confusingly.
-  private async requireSandbox(sandbox: ReturnType<typeof sandboxFor>) {
+  // not survive a restart. Fail with a clear reason instead.
+  private async requireSandbox(sandbox: Box) {
     if (!(await sandbox.alive())) {
       throw new Error("sandbox lost: the container restarted and its checkout is gone; rerun the attempt");
     }
   }
 
-  private async runTool(
-    call: Anthropic.Beta.BetaToolUseBlock,
-    p: AttemptParams,
-    sandbox: ReturnType<typeof sandboxFor>,
-    race: ReturnType<Env["Race"]["getByName"]>,
-  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+  private async runTool(call: Anthropic.Beta.BetaToolUseBlock, p: AttemptParams, sandbox: Box, race: Race): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
     const input = call.input as Record<string, string>;
     const done = (content: string, isError = false): Anthropic.Beta.BetaToolResultBlockParam => ({
       type: "tool_result",
@@ -266,7 +305,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
         return done(
           conflicts.length
             ? `Announced. Heads up: another race has claimed overlapping paths in this repo:\n${conflicts
-                .map((c) => `- race ${c.race} (${c.paths.join(", ")}): "${c.plan}"`)
+                .map((c) => `- race ${c.race} (${c.paths.join(", ")}): ${untrusted(`race ${c.race}`, c.plan)}`)
                 .join("\n")}\nKeep your change narrow, or explain the overlap in your rationale.`
             : "Announced. No other race has claimed these paths.",
         );
@@ -279,15 +318,18 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
       case "check":
         return done(await this.check(p, sandbox, race));
       case "stop_the_line": {
-        await race.halt({ by: p.attemptId, reason: input.reason });
-        return done("Line stopped. Every agent in this race will halt at its next step.");
+        // An agent stops its own repo only; only humans stop a whole race.
+        await race.halt({ by: p.attemptId, reason: input.reason, target: p.target });
+        return done(`Stopped every boat on ${p.target}. A human will read your reason and decide.`);
       }
       case "ask_fleet": {
         const fixes = await race.lookup(input.error);
         return done(
           fixes.length
-            ? fixes.map((f) => `From ${f.target} (error: ${f.signature}):\n${f.rationale}\nDiff:\n${f.diff}`).join("\n\n---\n\n")
-            : "No other agent has reported a fix for this error yet.",
+            ? fixes
+                .map((f) => `From ${f.target} (error: ${f.signature}), reproduced green in a fresh sandbox:\n${untrusted(`fix from ${f.target}`, `${f.rationale}\n${f.diff}`)}`)
+                .join("\n\n")
+            : "No verified fix for this error yet.",
         );
       }
       default:
@@ -295,13 +337,13 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
     }
   }
 
-  // Runs the check. When a check passes after an earlier failure, the diff
-  // between the two states is this agent's fix, so post it to the race
-  // blackboard for every other agent.
-  private async check(p: AttemptParams, sandbox: ReturnType<typeof sandboxFor>, race: ReturnType<Env["Race"]["getByName"]>) {
+  // Runs the check in the agent's own sandbox (for iteration only; it doesn't
+  // decide the outcome). A pass after a failure is a *candidate* fix: it goes
+  // on the blackboard only if the verify sandbox later reproduces it green.
+  private async check(p: AttemptParams, sandbox: Box, race: Race) {
     const r = await sandbox.sh(p.check, { timeoutSeconds: 900 });
     const output = (r.stdout + r.stderr).slice(-6000);
-    const stateFile = "/workspace/.regatta-last-failure";
+    const stateFile = `${WORK}/.regatta-last-failure`;
     if (r.exitCode !== 0) {
       const tree = (await sandbox.sh("git add -A && git write-tree && git reset --quiet")).stdout.trim();
       await sandbox.writeFile(stateFile, JSON.stringify({ tree, log: output }));
@@ -313,8 +355,8 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
       const diff = (await sandbox.sh(`git add -A && git diff --cached ${quote(tree)} && git reset --quiet`)).stdout;
       await sandbox.sh(`rm -f ${stateFile}`);
       if (diff.trim()) {
-        await race.postFix({ attemptId: p.attemptId, target: p.target, signature: errorSignature(log), errorLog: log.slice(-1500), diff: diff.slice(0, 8000), rationale: "Fixed a failing check; see diff." });
-        return `CHECK PASSED. Your fix for the earlier failure was shared with the fleet.\n${output.slice(-1500)}`;
+        await race.candidateFix(p.attemptId, { signature: errorSignature(log), errorLog: log.slice(-1500), diff: diff.slice(0, 8000), rationale: "Fixed a failing check; see diff." });
+        return `CHECK PASSED. If a fresh sandbox reproduces this, your fix will be shared with the fleet.\n${output.slice(-1500)}`;
       }
     }
     return `CHECK PASSED\n${output.slice(-1500)}`;

@@ -1,3 +1,5 @@
+import picomatch from "picomatch";
+import { DEPENDENCY_FILES } from "./toolchain";
 // Merge policy, modeled on a shared Renovate preset: one central rule set
 // decides which clusters can land without a human, instead of each repo
 // needing its own review. A cluster is the unit of approval.
@@ -7,20 +9,21 @@ import type { Cluster } from "./cluster";
 export type { Policy, Verdict } from "./schemas";
 import type { Policy, Verdict } from "./schemas";
 
+// What needs a human by default, for any ecosystem: dependency manifests and
+// lockfiles (supply chain), CI and build config (what runs with secrets), and
+// source code. Docs, tests and config that only describe the repo can land.
 export const DEFAULT_POLICY: Policy = {
-  requireReviewPaths: ["*.gemspec", "lib/**", "Gemfile"],
+  requireReviewPaths: [
+    ...DEPENDENCY_FILES.flatMap((f) => [f, `**/${f}`]),
+    ".github/workflows/**", ".gitlab-ci.yml", ".circleci/**", "Dockerfile", "**/Dockerfile", "Makefile", "*.mk",
+    "src/**", "lib/**", "app/**", "pkg/**", "cmd/**", "internal/**", "packages/*/src/**",
+  ],
   maxAutoDiffSize: 80,
 };
 
 
-// Minimal glob: `**` spans directories, `*` stays within one segment.
-export function globMatch(pattern: string, path: string): boolean {
-  const re = pattern
-    .split("**")
-    .map((part) => part.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*"))
-    .join(".*");
-  return new RegExp(`^${re}$`).test(path);
-}
+/** Glob match (picomatch): `**` spans directories, `*` stays within one segment. */
+export const globMatch = (pattern: string, path: string) => picomatch.isMatch(path, pattern, { dot: true });
 
 export function evaluate(cluster: Cluster, policy: Policy = DEFAULT_POLICY): Verdict {
   if (cluster.kind === "failing") return { decision: "blocked", reasons: ["checks failing"] };

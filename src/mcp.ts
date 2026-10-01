@@ -37,15 +37,16 @@ function createServer(env: Env, ctx: Ctx, auth: Auth) {
       inputSchema: {
         intent: z.string().min(1).describe("What every repo should end up with"),
         repos: z.array(z.string().url().startsWith("https://")).min(1).max(50).describe("Public HTTPS git URLs"),
-        check: z.string().min(1).describe("Shell command that defines passing, e.g. `bundle exec rake`"),
+        setup: z.string().default("").describe("Shell command that installs dependencies, e.g. `npm ci`"),
+        check: z.string().min(1).describe("Shell command that defines passing, e.g. `npm test`"),
         k: z.number().int().min(1).max(3).default(2).describe("Competing forks per repo"),
       },
     },
-    async ({ intent, repos, check, k }) => {
+    async ({ intent, repos, setup, check, k }) => {
       if (!writable) return fail(DENIED);
       const id = `c${Date.now().toString(36)}`;
       const targets = repos.map((url) => ({ url, name: url.replace(/\.git$/, "").split("/").filter(Boolean).at(-1) ?? url }));
-      await race(id).start(id, { intent, targets, check, k });
+      await race(id).start(id, { intent, targets, setup, check, k });
       await index().register(id, intent);
       return text({ id, repos: targets.length, k });
     },
@@ -112,7 +113,7 @@ function createServer(env: Env, ctx: Ctx, auth: Auth) {
     {
       description:
         "Why does this line exist? Returns the agent's problem, alternatives and rationale from the commit, and the decision, approver and dissent response from the merge that landed it.",
-      inputSchema: { repo: z.string().describe("Base repo name, e.g. base-jekyll-titles-from-headings"), path: z.string(), line: z.number().int().min(1) },
+      inputSchema: { repo: z.string().describe("Base repo name from race_status, e.g. base-my-repo-1a2b3c4d5e6f"), path: z.string(), line: z.number().int().min(1) },
     },
     async ({ repo, path, line }) => {
       // Computing an answer mints a token and may start a container, so it's a write-gated action here.

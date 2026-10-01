@@ -24,6 +24,31 @@ export function relaunchAfterHalt(attempts: AttemptLike[]): Array<{ target: stri
     .map((a) => ({ target: a.target, base: a.base, suffix: `h${(haltRuns.get(a.target) ?? 0) + 1}`, retryOf: a.id }));
 }
 
+/**
+ * How well two error signatures match: 1 when identical, otherwise the share
+ * of significant words they have in common (0 when fewer than two overlap).
+ * Shared by the blackboard lookup and coordinated retries, so a fix
+ * propagates on the same evidence an agent would find by asking.
+ */
+export function signatureMatch(a: string, b: string): number {
+  if (a === b) return 1;
+  const words = (s: string) => new Set(s.toLowerCase().split(/\W+/).filter((w) => w.length > 3 && !/^(error|failed|failure)$/.test(w)));
+  const wa = words(a);
+  const wb = words(b);
+  const shared = [...wa].filter((w) => wb.has(w)).length;
+  if (shared < 2) return 0;
+  return shared / Math.max(wa.size, wb.size);
+}
+
+/** Fixes worth handing to an agent stuck on this signature, best first. */
+export function matchingFixes<F extends { signature: string }>(signature: string, fixes: F[], min = 0.5): F[] {
+  return fixes
+    .map((f) => ({ f, score: signatureMatch(signature, f.signature) }))
+    .filter((x) => x.score >= min)
+    .sort((x, y) => y.score - x.score)
+    .map((x) => x.f);
+}
+
 /** What an agent needs to decide its next move, without diffs. */
 export function summarize(r: RaceView) {
   const states: Record<string, number> = {};

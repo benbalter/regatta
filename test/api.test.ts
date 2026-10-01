@@ -31,6 +31,7 @@ describe("validation", () => {
     ["non-https target", { ...good, targets: [{ name: "x", url: "git://github.com/x/y" }] }, "targets.0.url"],
     ["no targets", { ...good, targets: [] }, "targets"],
     ["missing check", { ...good, check: undefined }, "check"],
+    ["the same repo twice", { ...good, targets: [{ name: "a", url: "https://github.com/x/y" }, { name: "b", url: "https://GitHub.com/x/y.git" }] }, "targets"],
   ])("rejects %s with the standard error envelope", async (_name, body, field) => {
     const res = await post("/api/races", body);
     expect(res.status).toBe(400);

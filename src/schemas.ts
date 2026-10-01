@@ -7,6 +7,7 @@
  * Workers-only imports so `scripts/build-openapi.ts` can run in Node.
  */
 import { z } from "@hono/zod-openapi";
+import { canonicalRepoUrl } from "./identity";
 
 export const ApiError = z.object({ error: z.string() }).openapi("Error");
 
@@ -22,22 +23,44 @@ export const Target = z
     name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/).describe("Display name, e.g. `jekyll-titles-from-headings`"),
     url: z.string().url().startsWith("https://").describe("Public HTTPS git URL to import from"),
     branch: z.string().optional(),
+    setup: z.string().max(1000).optional().describe("Overrides the race's setup command for this repo"),
+    check: z.string().max(1000).optional().describe("Overrides the race's check command for this repo"),
   })
   .openapi("Target");
 
 export const RaceSpec = z
   .object({
     intent: z.string().trim().min(1).max(4000).describe("What every agent should accomplish in each repo"),
-    targets: z.array(Target).min(1).max(50),
+    targets: z
+      .array(Target)
+      .min(1)
+      .max(50)
+      .refine((ts) => new Set(ts.map((t) => t.name)).size === ts.length, "target names must be unique within a race")
+      .refine((ts) => new Set(ts.map((t) => `${canonicalRepoUrl(t.url)}#${t.branch ?? ""}`)).size === ts.length, "each repo (URL and branch) may appear once per race"),
     k: z.number().int().min(1).max(3).default(2).describe("Competing agent forks per repo"),
-    check: z.string().trim().min(1).max(1000).describe("Shell command that defines passing, e.g. `bundle exec rake`"),
+    setup: z
+      .string()
+      .trim()
+      .max(1000)
+      .default("")
+      .describe("Shell command that installs dependencies, e.g. `npm ci` or `bundle install`; repos can override"),
+    check: z.string().trim().min(1).max(1000).describe("Shell command that defines passing, e.g. `npm test`; repos can override"),
     policy: Policy.optional(),
   })
   .openapi("RaceSpec");
 
 export const Halt = z
-  .object({ by: z.string(), reason: z.string(), at: z.string().datetime() })
+  .object({
+    by: z.string(),
+    reason: z.string(),
+    at: z.string().datetime(),
+    target: z.string().optional().describe("Set when only one repo is stopped (an agent's cord); absent when the whole race is"),
+  })
   .openapi("Halt", { description: "The andon cord: who stopped the line, and why." });
+
+export const Usage = z
+  .object({ inputTokens: z.number().int(), outputTokens: z.number().int(), cacheReadTokens: z.number().int() })
+  .openapi("Usage", { description: "Model tokens an attempt used" });
 
 export const AttemptReport = z
   .object({
@@ -56,6 +79,7 @@ export const AttemptReport = z
     turns: z.number().int(),
     error: z.string().optional(),
     halted: z.boolean().optional().describe("Stopped because the andon cord was pulled"),
+    usage: Usage.optional(),
   })
   .openapi("AttemptReport");
 
@@ -91,6 +115,10 @@ export const Attempt = z
     hints: z.array(z.string()).describe("Fixes from other agents this attempt was seeded with"),
     report: AttemptReport.nullable(),
     announcement: Announcement.nullable(),
+    candidateFix: z
+      .object({ signature: z.string(), errorLog: z.string(), diff: z.string(), rationale: z.string() })
+      .nullable()
+      .describe("A fix the agent found mid-attempt; shared only if the verify sandbox reproduces it green"),
     undeclared: z.array(z.string()).describe("Changed files the announcement didn't cover"),
     landedSha: z.string().nullable(),
     landError: z.string().nullable(),
@@ -108,6 +136,7 @@ export const Fix = z
     diff: z.string(),
     rationale: z.string(),
     createdAt: z.string(),
+    verified: z.literal(true).describe("Every blackboard fix was reproduced green in a fresh sandbox"),
   })
   .openapi("Fix", { description: "A blackboard entry: one agent's fix, offered to every agent that hits the same error." });
 
@@ -141,7 +170,7 @@ export const FeedEvent = z
   .object({
     id: z.number().int(),
     at: z.string(),
-    kind: z.enum(["sync", "launch", "announce", "conflict", "fix", "retry", "finish", "halt", "resume", "decision", "land", "cache"]),
+    kind: z.enum(["sync", "launch", "announce", "conflict", "fix", "retry", "finish", "halt", "resume", "decision", "land", "cache", "warm"]),
     target: z.string().nullable(),
     attempt: z.string().nullable(),
     text: z.string(),
@@ -177,6 +206,8 @@ export const RaceView = z
     fixes: z.array(Fix),
     approved: z.array(z.string()),
     halt: Halt.nullable(),
+    repoHalts: z.record(z.string(), Halt).describe("Repos an agent stopped, without stopping the race"),
+    usage: Usage.describe("Model tokens across the race"),
     feed: z.array(FeedEvent).describe("Newest last; the most recent 300"),
     decisionDocs: z.record(z.string(), DecisionDoc).describe("Cluster key → decision doc, for clusters escalated to review"),
     sync: z.record(z.string(), z.object({ status: z.union([SyncStatus, z.literal("syncing")]), detail: z.string() })),
@@ -237,6 +268,7 @@ export type ClusterView = z.infer<typeof Cluster>;
 export type SyncStatus = z.infer<typeof SyncStatus>;
 export type RaceView = z.infer<typeof RaceView>;
 export type WhyAnswer = z.infer<typeof WhyAnswer>;
+export type Usage = z.infer<typeof Usage>;
 export type Announcement = z.infer<typeof Announcement>;
 export type ClaimConflict = z.infer<typeof ClaimConflict>;
 export type FeedEvent = z.infer<typeof FeedEvent>;

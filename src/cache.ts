@@ -1,38 +1,44 @@
-// Installed gems cached in R2, keyed by the repo's dependency files. With
-// 8 repos × K forks, a cold `bundle install` per boat dominates race time;
-// a warm restore is one download. Cloudflare's build-on-push guide caches
-// dependencies in R2 the same way.
+// Installed toolchains and dependencies, cached in R2. Every package manager
+// in the sandbox image writes under /cache, so one tarball covers any
+// ecosystem.
 //
-// The sandbox has no internet and no credentials, so it reaches the cache as
-// a virtual host (`cache.regatta`) that the egress Worker serves from R2.
+// Untrusted code can't poison it:
+// - The *namespace* (one per base repo) comes from the egress Worker's props,
+//   not the request path, so a sandbox can't read or write another repo's
+//   cache.
+// - Only the *warm* sandbox (repo's own setup, on its base branch) may write.
+//   Agent and verify sandboxes, which run agent-written code, are read-only.
+// The sandbox has no internet and no credentials; it reaches the cache as a
+// virtual host the egress Worker serves.
+
+import { cacheKeyScript } from "./toolchain";
 
 export const CACHE_HOST = "cache.regatta";
-const KEY = /^\/gems\/[0-9a-f]{32}\.tgz$/;
+const KEY = /^\/c\/[0-9a-f]{32}\.tgz$/;
 
-/** Only well-formed cache keys are readable or writable. */
+/** Only well-formed keys; the namespace is added by the egress Worker. */
 export const isCacheKey = (path: string) => KEY.test(path);
 
-// The key covers the *tracked* files that decide what bundler installs, plus
-// the Ruby version (native extensions are ABI-specific). Tracked only: many
-// gems don't commit Gemfile.lock, and `bundle install` creates one, so hashing
-// whatever is on disk would give the restore (fresh clone) and the save (after
-// install) different keys for the same dependencies. GEM_HOME in the ruby
-// image is /usr/local/bundle.
-const keyScript = `KEY=$( (git ls-files -z -- Gemfile Gemfile.lock '*.gemspec' | xargs -0 cat; ruby -v) | sha256sum | cut -c1-32 )`;
+/** R2 object key: the egress Worker's namespace, then the content key. */
+export const cacheObjectKey = (namespace: string, path: string) => `${namespace}${path.slice(2)}`;
 
-/** Restore installed gems if this dependency set has been seen before. Never fails the step. */
-export const restoreScript = [
-  keyScript,
-  `if curl -sf -o /tmp/gems.tgz "http://${CACHE_HOST}/gems/$KEY.tgz"; then tar xzf /tmp/gems.tgz -C / && rm -f /tmp/gems.tgz && echo "hit $KEY"; else echo "miss $KEY"; fi`,
-].join("\n");
+/** Restore /cache if this dependency set has been seen. Never fails the step. */
+export function restoreScript(setup: string): string {
+  return [
+    cacheKeyScript(setup),
+    `if curl -sf -o /tmp/cache.tgz "http://${CACHE_HOST}/c/$KEY.tgz"; then tar xzf /tmp/cache.tgz -C / && rm -f /tmp/cache.tgz && echo "hit $KEY"; else echo "miss $KEY"; fi`,
+  ].join("\n");
+}
 
-/** Save installed gems for this dependency set, unless they're already cached. Never fails the step. */
-export const saveScript = [
-  keyScript,
-  `if curl -sfI "http://${CACHE_HOST}/gems/$KEY.tgz" >/dev/null; then echo "exists $KEY"; exit 0; fi`,
-  `tar czf /tmp/gems.tgz /usr/local/bundle 2>/dev/null && curl -sf -X PUT --data-binary @/tmp/gems.tgz "http://${CACHE_HOST}/gems/$KEY.tgz" >/dev/null && echo "saved $KEY" || echo "save failed $KEY"`,
-  "rm -f /tmp/gems.tgz",
-].join("\n");
+/** Save /cache for this dependency set (warm sandbox only; egress refuses others). */
+export function saveScript(setup: string): string {
+  return [
+    cacheKeyScript(setup),
+    `if curl -sfI "http://${CACHE_HOST}/c/$KEY.tgz" >/dev/null; then echo "exists $KEY"; exit 0; fi`,
+    `tar czf /tmp/cache.tgz /cache 2>/dev/null && curl -sf -X PUT --data-binary @/tmp/cache.tgz "http://${CACHE_HOST}/c/$KEY.tgz" >/dev/null && echo "saved $KEY" || echo "save failed $KEY"`,
+    "rm -f /tmp/cache.tgz",
+  ].join("\n");
+}
 
 export function parseCacheResult(stdout: string): { status: "hit" | "miss" | "saved" | "exists" | "unknown"; key: string } {
   const m = stdout.trim().split("\n").at(-1)?.match(/^(hit|miss|saved|exists|save failed) ([0-9a-f]{32})$/);

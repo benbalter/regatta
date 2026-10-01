@@ -209,8 +209,8 @@ app.openapi(
     security: optionalAdmin,
     request: {
       query: z.object({
-        repo: z.string().openapi({ example: "base-jekyll-titles-from-headings" }),
-        path: z.string().openapi({ example: ".ruby-version" }),
+        repo: z.string().openapi({ example: "base-my-repo-1a2b3c4d5e6f" }),
+        path: z.string().openapi({ example: "README.md" }),
         line: z.coerce.number().int().min(1).openapi({ example: 1 }),
       }),
     },

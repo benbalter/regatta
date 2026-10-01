@@ -160,7 +160,12 @@ export interface components {
              * @default 2
              */
             k: number;
-            /** @description Shell command that defines passing, e.g. `bundle exec rake` */
+            /**
+             * @description Shell command that installs dependencies, e.g. `npm ci` or `bundle install`; repos can override
+             * @default
+             */
+            setup: string;
+            /** @description Shell command that defines passing, e.g. `npm test`; repos can override */
             check: string;
             policy?: components["schemas"]["Policy"];
         };
@@ -170,6 +175,10 @@ export interface components {
             /** @description Public HTTPS git URL to import from */
             url: string;
             branch?: string;
+            /** @description Overrides the race's setup command for this repo */
+            setup?: string;
+            /** @description Overrides the race's check command for this repo */
+            check?: string;
         };
         Policy: {
             /** @description Globs that always need a human, e.g. `lib/**` */
@@ -186,6 +195,11 @@ export interface components {
             fixes: components["schemas"]["Fix"][];
             approved: string[];
             halt: components["schemas"]["Halt"];
+            /** @description Repos an agent stopped, without stopping the race */
+            repoHalts: {
+                [key: string]: components["schemas"]["Halt"];
+            };
+            usage: components["schemas"]["Usage"] & unknown;
             /** @description Newest last; the most recent 300 */
             feed: components["schemas"]["FeedEvent"][];
             /** @description Cluster key → decision doc, for clusters escalated to review */
@@ -212,6 +226,13 @@ export interface components {
             hints: string[];
             report: components["schemas"]["AttemptReport"];
             announcement: components["schemas"]["Announcement"];
+            /** @description A fix the agent found mid-attempt; shared only if the verify sandbox reproduces it green */
+            candidateFix: {
+                signature: string;
+                errorLog: string;
+                diff: string;
+                rationale: string;
+            } | null;
             /** @description Changed files the announcement didn't cover */
             undeclared: string[];
             landedSha: string | null;
@@ -235,7 +256,14 @@ export interface components {
             error?: string;
             /** @description Stopped because the andon cord was pulled */
             halted?: boolean;
+            usage?: components["schemas"]["Usage"];
         } | null;
+        /** @description Model tokens an attempt used */
+        Usage: {
+            inputTokens: number;
+            outputTokens: number;
+            cacheReadTokens: number;
+        };
         /** @description Work loudly: an agent's plan, posted before its first edit. */
         Announcement: {
             /** @description What the agent intends to do in this repo, before it does it */
@@ -296,6 +324,11 @@ export interface components {
             diff: string;
             rationale: string;
             createdAt: string;
+            /**
+             * @description Every blackboard fix was reproduced green in a fresh sandbox
+             * @enum {boolean}
+             */
+            verified: true;
         };
         /** @description The andon cord: who stopped the line, and why. */
         Halt: {
@@ -303,13 +336,15 @@ export interface components {
             reason: string;
             /** Format: date-time */
             at: string;
+            /** @description Set when only one repo is stopped (an agent's cord); absent when the whole race is */
+            target?: string;
         } | null;
         /** @description One line in the race's live feed. */
         FeedEvent: {
             id: number;
             at: string;
             /** @enum {string} */
-            kind: "sync" | "launch" | "announce" | "conflict" | "fix" | "retry" | "finish" | "halt" | "resume" | "decision" | "land" | "cache";
+            kind: "sync" | "launch" | "announce" | "conflict" | "fix" | "retry" | "finish" | "halt" | "resume" | "decision" | "land" | "cache" | "warm";
             target: string | null;
             attempt: string | null;
             text: string;

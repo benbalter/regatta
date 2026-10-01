@@ -237,30 +237,48 @@ function RaceList() {
   );
 }
 
-const DEMO_TARGETS = [
-  "jekyll-include-cache",
-  "jekyll-optional-front-matter",
-  "jekyll-readme-index",
-  "jekyll-relative-links",
-  "jekyll-remote-theme",
-  "jekyll-titles-from-headings",
-  "jekyll-default-layout",
-].map((n) => `https://github.com/benbalter/${n}`);
+// A demo race that spans ecosystems: Ruby gems and Node packages, each with
+// its own setup and check. Some already pin their runtime, so one cluster
+// should be "nothing needed".
+const DEMO = {
+  intent: "Pin the language runtime version for local development (for example .ruby-version or .nvmrc), matching the version CI tests against. Change nothing else.",
+  setup: "",
+  check: "",
+  targets: [
+    ...["jekyll-relative-links", "jekyll-titles-from-headings", "jekyll-readme-index", "jekyll-optional-front-matter"].map(
+      (n) => `https://github.com/benbalter/${n} | bundle install --jobs 4 --quiet | bundle exec rspec`,
+    ),
+    ...["markdown-to-word-js", "bulk-issue-creator", "comment-rollup", "site-inspector-js"].map((n) => `https://github.com/benbalter/${n} | npm ci | npm test`),
+  ].join("\n"),
+};
+
+/** One repo per line: `url`, or `url | setup | check` to override the race defaults. */
+function parseTargets(text: string) {
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [url, setup, check] = line.split("|").map((x) => x.trim());
+      const name = url.replace(/\.git$/, "").split("/").filter(Boolean).at(-1) ?? url;
+      return { url, name, ...(setup ? { setup } : {}), ...(check ? { check } : {}) };
+    });
+}
 
 function NewRace() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [form, setForm] = useState({ intent: "", setup: "", check: "", targets: "" });
+  const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value });
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    const get = (k: string) => String(fd.get(k) ?? "").trim();
-    const targets = get("targets")
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((url) => ({ url, name: url.replace(/\.git$/, "").split("/").filter(Boolean).at(-1) ?? url }));
+    const k = Number(new FormData(e.currentTarget).get("k"));
     setBusy(true);
     setError(null);
-    const { data, error } = await api.POST("/api/races", { body: { intent: get("intent"), check: get("check"), k: Number(get("k")), targets } });
+    const targets = parseTargets(form.targets);
+    // A race-level check is required; per-repo checks can override it.
+    const check = form.check.trim() || targets.find((t) => "check" in t)?.check || "";
+    const { data, error } = await api.POST("/api/races", { body: { intent: form.intent, setup: form.setup, check, k, targets } });
     setBusy(false);
     if (error) setError(error.error);
     else location.hash = `#/races/${data.id}`;
@@ -268,18 +286,27 @@ function NewRace() {
   return (
     <form onSubmit={submit} className={`${card} rise grid gap-6 p-6 md:grid-cols-[2fr_1fr]`}>
       <div className="space-y-5">
+        <div className="flex items-center justify-between">
+          <h1 className="font-display text-2xl">Start a race</h1>
+          <Button type="button" variant="outline" size="sm" onClick={() => setForm(DEMO)}>
+            Load the demo race
+          </Button>
+        </div>
+        <InputArea label="Intent" name="intent" rows={3} required value={form.intent} onChange={set("intent")} placeholder="What should every repo end up with?" />
         <InputArea
-          label="Intent"
-          name="intent"
-          rows={3}
+          label="Repos: one per line, as `url` or `url | setup | check` to override the defaults"
+          name="targets"
+          rows={9}
           required
-          defaultValue="Pin the Ruby version for local development in a .ruby-version file (Ruby 3.4)."
-          placeholder="What should every repo end up with?"
+          value={form.targets}
+          onChange={set("targets")}
+          placeholder={"https://github.com/you/api | npm ci | npm test\nhttps://github.com/you/gem | bundle install | bundle exec rake"}
+          className="font-mono"
         />
-        <InputArea label="Repos (one public HTTPS git URL per line)" name="targets" rows={8} required defaultValue={DEMO_TARGETS.join("\n")} className="font-mono" />
       </div>
       <div className="space-y-5">
-        <Input label="Check (what passing means)" name="check" required defaultValue="bundle install --jobs 4 --quiet && bundle exec rspec" className="font-mono" />
+        <Input label="Default setup (installs dependencies; optional)" name="setup" value={form.setup} onChange={set("setup")} placeholder="npm ci" className="font-mono" />
+        <Input label="Default check (what passing means)" name="check" value={form.check} onChange={set("check")} placeholder="npm test" className="font-mono" />
         <label className="block">
           <span className="mb-1.5 block text-sm font-medium">Boats per repo</span>
           <select name="k" defaultValue="2" className="w-full rounded-lg border border-rule bg-paper px-3 py-2 text-sm">
@@ -287,7 +314,9 @@ function NewRace() {
             <option value="2">2: a race between two forks</option>
             <option value="3">3: three forks</option>
           </select>
-          <span className="mt-2 block text-xs text-muted">Each boat is an agent working its own fork. The smallest green change wins by default.</span>
+          <span className="mt-2 block text-xs text-muted">
+            Each boat is an agent in its own sandbox. A separate, fresh sandbox re-runs the check on what it changed; only that result counts. The smallest green change wins by default.
+          </span>
         </label>
         <Button type="submit" variant="primary" className="w-full" disabled={busy}>
           {busy ? "Starting…" : "Start the race"}
@@ -335,7 +364,13 @@ function RaceView({ race: r, refresh, setNotice }: { race: Race; refresh: () => 
     <>
       <section className="rise mb-6">
         <div className="font-mono text-xs uppercase tracking-wider text-muted">
-          Race {r.id} · started {ago(r.createdAt)} · check <code>{r.spec.check}</code>
+          Race {r.id} · started {ago(r.createdAt)}
+          {r.spec.setup && (
+            <>
+              {" "}· setup <code>{r.spec.setup}</code>
+            </>
+          )}{" "}
+          · check <code>{r.spec.check}</code>
         </div>
         <h1 className="mt-2 max-w-4xl font-display text-3xl leading-tight md:text-4xl">{r.spec.intent}</h1>
         <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2">
@@ -345,7 +380,8 @@ function RaceView({ race: r, refresh, setNotice }: { race: Race; refresh: () => 
           <Flag k="landed">{counts.landed ?? 0} landed</Flag>
           <Flag k="halted">{counts.halted ?? 0} halted</Flag>
           <span className="text-xs font-medium uppercase tracking-wider text-muted">
-            {r.spec.targets.length} repos · {r.spec.k} boats each · {r.fixes.length} fixes shared
+            {r.spec.targets.length} repos · {r.spec.k} boats each · {r.fixes.length} verified fixes shared ·{" "}
+            {Math.round((r.usage.inputTokens + r.usage.outputTokens) / 1000).toLocaleString()}k model tokens
           </span>
         </div>
       </section>
@@ -396,9 +432,25 @@ function Andon({ race: r, refresh, setNotice }: { race: Race; refresh: () => Pro
       </section>
     );
   }
+  const repoHalts = Object.entries(r.repoHalts);
   if (!open) {
     return (
-      <div className="mb-6 flex justify-end">
+      <div className="mb-6 flex flex-wrap items-center justify-end gap-3">
+        {repoHalts.length > 0 && (
+          <span className="text-sm text-flag-red">
+            {repoHalts.length} repo{repoHalts.length === 1 ? "" : "s"} stopped by an agent: {repoHalts.map(([t]) => t).join(", ")}.{" "}
+            <button
+              className="underline"
+              onClick={async () => {
+                const { data } = await api.POST("/api/races/{id}/resume", { params: { path: { id: r.id } }, body: {} });
+                setNotice(`Released. Relaunched: ${data?.relaunched.join(", ") || "nothing"}.`);
+                await refresh();
+              }}
+            >
+              Review and release
+            </button>
+          </span>
+        )}
         <Button variant="secondary-destructive" onClick={() => setOpen(true)}>
           ⛔ Pull the andon cord
         </Button>
@@ -420,7 +472,7 @@ function Andon({ race: r, refresh, setNotice }: { race: Race; refresh: () => Pro
       }}
     >
       <div className="min-w-64 flex-1">
-        <Input label="Why stop every agent in this race?" name="reason" required autoFocus placeholder="e.g. the intent breaks repos that still support Ruby 3.1" />
+        <Input label="Why stop every agent in this race?" name="reason" required autoFocus placeholder="e.g. this change breaks repos that still support older runtimes" />
       </div>
       <Button type="submit" variant="destructive" disabled={busy}>
         Stop the line
@@ -444,17 +496,22 @@ function Course({ race: r }: { race: Race }) {
         {r.spec.targets.map((t) => {
           const sync = r.sync[t.name];
           const boats = r.attempts.filter((a) => a.target === t.name);
+          const stopped = r.repoHalts[t.name];
           return (
             <div key={t.name} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
               <div className="w-56 min-w-0 shrink-0">
                 <div className="truncate font-mono text-sm">{t.name}</div>
                 <div className="text-xs text-muted">{sync ? `base ${sync.status}` : "waiting"}</div>
+                {(t.setup || t.check) && <div className="truncate font-mono text-[11px] text-muted">{[t.setup, t.check].filter(Boolean).join(" → ")}</div>}
+                {stopped && <div className="text-xs text-flag-red">stopped by {stopped.by}: {stopped.reason}</div>}
               </div>
               <div className="flex flex-1 flex-wrap gap-2">
                 {boats.length ? (
                   boats.map((a) => <BoatChip key={a.id} a={a} />)
                 ) : (
-                  <span className="text-xs text-muted">{sync?.status === "conflict" ? "skipped: upstream sync conflict" : "launching…"}</span>
+                  <span className="text-xs text-muted">
+                    {sync?.status === "conflict" || sync?.status === "failed" ? `skipped: ${sync.status}${sync.detail ? ` (${sync.detail.slice(0, 120)})` : ""}` : "launching…"}
+                  </span>
                 )}
               </div>
             </div>
@@ -637,7 +694,7 @@ function DecisionDocView({
               onChange={(e) => setAnswer(e.target.value)}
             />
             <div className="flex items-end gap-2">
-              <Input label="Your name" value={name} onChange={(e) => setName(e.target.value)} />
+              <Input label="Your name (verified when you sign in with Cloudflare Access)" value={name} onChange={(e) => setName(e.target.value)} />
               <Button type="submit" variant="primary" disabled={busy}>
                 Approve and land {landingCount}
               </Button>
@@ -703,7 +760,7 @@ function Blackboard({ race: r }: { race: Race }) {
   return (
     <section className={`${card} rise p-5`}>
       <h2 className="font-display text-xl">The blackboard</h2>
-      <p className="text-sm text-muted">One repo's fix, offered to every boat that hits the same error.</p>
+      <p className="text-sm text-muted">One repo's fix, offered to every boat that hits the same error. Only fixes a fresh sandbox reproduced green get posted.</p>
       <div className="mt-4 space-y-3">
         {r.fixes.map((f) => {
           const helped = r.attempts.filter((a) => a.hints.some((x) => x.startsWith(`${f.target} hit`) && x.includes(f.signature)));
@@ -711,7 +768,7 @@ function Blackboard({ race: r }: { race: Race }) {
             <div key={f.id} className="rounded-lg border border-rule p-4">
               <div className="font-mono text-xs text-flag-red">{f.signature}</div>
               <div className="mt-1 text-sm">
-                Fixed in <span className="font-mono">{f.target}</span> by {shortId(f.attemptId)}
+                Fixed in <span className="font-mono">{f.target}</span> by {shortId(f.attemptId)} <Badge variant="success">verified</Badge>
               </div>
               {helped.length ? (
                 <div className="mt-2 text-sm">
@@ -764,7 +821,7 @@ function WhyBox({ race: r }: { race: Race }) {
             <option key={b}>{b}</option>
           ))}
         </select>
-        <Input aria-label="Path" name="path" required placeholder=".ruby-version" className="font-mono" />
+        <Input aria-label="Path" name="path" required placeholder="path/to/file" className="font-mono" />
         <Input aria-label="Line" name="line" type="number" min={1} required defaultValue="1" className="font-mono" />
         <Button type="submit" variant="primary" disabled={busy}>
           Ask why
