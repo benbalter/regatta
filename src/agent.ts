@@ -134,11 +134,13 @@ export function kickoff(intent: string, target: string, hints: string[]): string
 }
 
 // Models are pluggable per role, as "provider:model":
-//   anthropic:claude-opus-5-5   via AI Gateway (BYOK) when AI_GATEWAY_URL is set, else direct
-//   ollama:qwen3.6              local prototyping; Ollama serves the Anthropic Messages API
-// One code path for both: only the base URL, auth and Anthropic-only extras differ.
+//   anthropic:claude-opus-5-5          via AI Gateway (BYOK) when AI_GATEWAY_URL is set, else direct
+//   ollama:qwen3.6                     local prototyping; Ollama serves the Anthropic Messages API
+//   workers-ai:@cf/moonshotai/kimi-k2.6  Cloudflare Workers AI, e.g. a dissenter from a different model family
+// Anthropic and Ollama share one SDK path; Workers AI goes through the AI binding.
+const PROVIDERS = ["anthropic", "ollama", "workers-ai"] as const;
 export interface ModelSpec {
-  provider: "anthropic" | "ollama";
+  provider: (typeof PROVIDERS)[number];
   model: string;
 }
 
@@ -147,9 +149,24 @@ export function parseModel(spec: string | undefined, fallback = `anthropic:${DEF
   const i = raw.indexOf(":");
   const provider = i === -1 ? "anthropic" : raw.slice(0, i);
   const model = i === -1 ? raw : raw.slice(i + 1);
-  if (provider !== "anthropic" && provider !== "ollama") throw new Error(`unknown model provider "${provider}" in "${raw}"`);
+  if (!(PROVIDERS as readonly string[]).includes(provider)) throw new Error(`unknown model provider "${provider}" in "${raw}"`);
   if (!model) throw new Error(`no model named in "${raw}"`);
-  return { provider, model };
+  return { provider: provider as ModelSpec["provider"], model };
+}
+
+// Workers AI chat models answer either { response } or OpenAI-style { choices }.
+async function completeWorkersAI(env: Env, model: string, system: string, user: string): Promise<string> {
+  if (!env.AI) throw new Error("workers-ai provider needs the AI binding");
+  const input = { messages: [{ role: "system", content: system }, { role: "user", content: user }], max_tokens: 4000 };
+  // Through AI Gateway when configured, for the same logs, limits and cost data as Claude.
+  const options = env.AI_GATEWAY_ID ? { gateway: { id: env.AI_GATEWAY_ID } } : undefined;
+  const res = (await env.AI.run(model as Parameters<Ai["run"]>[0], input as never, options)) as {
+    response?: string;
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const text = res.response ?? res.choices?.[0]?.message?.content;
+  if (!text) throw new Error(`no text in Workers AI reply from ${model}`);
+  return text;
 }
 
 function clientFor(env: Env, spec: ModelSpec): Anthropic {
@@ -174,6 +191,9 @@ export async function modelTurn(
   system: string,
   messages: Anthropic.Beta.BetaMessageParam[],
 ): Promise<Anthropic.Beta.BetaMessage> {
+  if (spec.provider === "workers-ai") {
+    throw new Error("workers-ai is wired for decision docs and dissents only; attempts need the tool-calling adapter (planned for the model comparison)");
+  }
   const client = clientFor(env, spec);
   const body: Anthropic.Beta.MessageCreateParamsNonStreaming = {
     model: spec.model,
@@ -200,6 +220,7 @@ export async function modelTurn(
 
 /** A single tool-less completion, for decision docs and dissents. Returns the text. */
 export async function complete(env: Env, spec: ModelSpec, system: string, user: string): Promise<string> {
+  if (spec.provider === "workers-ai") return completeWorkersAI(env, spec.model, system, user);
   const client = clientFor(env, spec);
   const body: Anthropic.Beta.MessageCreateParamsNonStreaming = {
     model: spec.model,

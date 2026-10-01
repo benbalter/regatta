@@ -25,6 +25,8 @@
       "images": { "sandbox": { "dockerfile": "./Dockerfile" } }
     }
   ],
+  // Workers AI, for the dissenting reviewer (a different model family from the agents).
+  "ai": { "binding": "AI" },
   // Installed-dependency cache for sandboxes (see src/cache.ts).
   "r2_buckets": [{ "binding": "CACHE", "bucket_name": "regatta-cache" }],
   "workflows": [
@@ -47,11 +49,13 @@
     "production": {
       "vars": {
         "REGATTA_AGENT_MODEL": "anthropic:claude-opus-5-5",
-        "REGATTA_DISSENT_MODEL": "anthropic:claude-opus-5-5",
+        // A different model family argues against Claude's recommendation.
+        "REGATTA_DISSENT_MODEL": "workers-ai:@cf/moonshotai/kimi-k2.6",
         "OLLAMA_URL": "",
         "FAKE_ARTIFACTS_URL": "",
         "FAKE_ARTIFACTS_HOST": ""
       },
+      "ai": { "binding": "AI" },
       "artifacts": [{ "binding": "ARTIFACTS", "namespace": "regatta" }],
       "durable_objects": {
         "bindings": [

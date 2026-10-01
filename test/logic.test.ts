@@ -110,6 +110,7 @@ describe("parseModel", () => {
     expect(parseModel("claude-opus-5-5")).toEqual({ provider: "anthropic", model: "claude-opus-5-5" });
     expect(parseModel(undefined).provider).toBe("anthropic");
     expect(() => parseModel("openai:gpt")).toThrow(/unknown model provider/);
+    expect(parseModel("workers-ai:@cf/moonshotai/kimi-k2.6")).toEqual({ provider: "workers-ai", model: "@cf/moonshotai/kimi-k2.6" });
   });
 });
 

@@ -30,17 +30,26 @@ export class DecisionWorkflow extends WorkflowEntrypoint<Env, DecisionParams> {
         return parsed ?? { problem: text.trim(), options: [], recommendation: "(the model did not return a structured recommendation)", ask: "Review the attempts directly." };
       });
 
+      // A missing dissent must be visible, not silent: if the dissenter can't
+      // answer, the doc still lands (without one) and the race log says why.
       const dissent = await step.do(`dissent-${cluster.key}`, { retries: { limit: 2, delay: "10 seconds" } }, async () => {
         const d = dissentPrompt(body, cluster);
-        const parsed = parseJsonReply(await complete(this.env, dissentModel, d.system, d.user), DissentBody);
-        return parsed ? { ...parsed, model: `${dissentModel.provider}:${dissentModel.model}` } : null;
+        const model = `${dissentModel.provider}:${dissentModel.model}`;
+        try {
+          const parsed = parseJsonReply(await complete(this.env, dissentModel, d.system, d.user), DissentBody);
+          if (!parsed) throw new Error("the reply wasn't the expected JSON");
+          return { ok: true as const, dissent: { ...parsed, model } };
+        } catch (e) {
+          return { ok: false as const, error: `${model}: ${(e as Error).message.split("\n")[0].slice(0, 300)}` };
+        }
       });
+      if (!dissent.ok) await step.do(`dissent-failed-${cluster.key}`, () => race.noteDecision(`no dissent for "${cluster.label}": ${dissent.error}`));
 
       const doc: DecisionDoc = {
         clusterKey: cluster.key,
         basis: basisOf(cluster),
         ...body,
-        dissent,
+        dissent: dissent.ok ? dissent.dissent : null,
         model: `${docModel.provider}:${docModel.model}`,
         generatedAt: new Date().toISOString(),
       };
