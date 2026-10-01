@@ -1,0 +1,7 @@
+.fake-artifacts/
+node_modules/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.op

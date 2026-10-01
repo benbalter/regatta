@@ -1,0 +1,68 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "regatta",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [
+      { "name": "CAMPAIGN", "class_name": "Campaign" },
+      { "name": "SANDBOX", "class_name": "Sandbox" }
+    ]
+  },
+  "exports": {
+    "Campaign": { "type": "durable-object", "storage": "sqlite" },
+    "Sandbox": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "scheduling_policy": "durable_object",
+      "images": { "sandbox": { "dockerfile": "./Dockerfile" } }
+    }
+  ],
+  "workflows": [
+    { "name": "regatta-attempt", "binding": "ATTEMPT", "class_name": "AttemptWorkflow" },
+    { "name": "regatta-land", "binding": "LAND", "class_name": "LandWorkflow" }
+  ],
+  "vars": {
+    // "provider:model" per role. Local dev runs free on Ollama; production uses Claude via AI Gateway.
+    "REGATTA_AGENT_MODEL": "ollama:qwen3.6",
+    "REGATTA_DISSENT_MODEL": "ollama:gemma4",
+    "OLLAMA_URL": "http://localhost:11434",
+    // Local dev: the Artifacts binding is remote-only, so point at scripts/fake-artifacts.ts.
+    "FAKE_ARTIFACTS_URL": "http://localhost:8790",
+    "FAKE_ARTIFACTS_HOST": "artifacts.regatta.local"
+  },
+  "env": {
+    // Real Artifacts. Needs Workers Paid: `wrangler deploy --env production`.
+    "production": {
+      "vars": {
+        "REGATTA_AGENT_MODEL": "anthropic:claude-opus-5-5",
+        "REGATTA_DISSENT_MODEL": "anthropic:claude-opus-5-5",
+        "OLLAMA_URL": "",
+        "FAKE_ARTIFACTS_URL": "",
+        "FAKE_ARTIFACTS_HOST": ""
+      },
+      "artifacts": [{ "binding": "ARTIFACTS", "namespace": "regatta" }],
+      "durable_objects": {
+        "bindings": [
+          { "name": "CAMPAIGN", "class_name": "Campaign" },
+          { "name": "SANDBOX", "class_name": "Sandbox" }
+        ]
+      },
+      "containers": [
+        {
+          "class_name": "Sandbox",
+          "scheduling_policy": "durable_object",
+          "images": { "sandbox": { "dockerfile": "./Dockerfile" } }
+        }
+      ],
+      "workflows": [
+        { "name": "regatta-attempt", "binding": "ATTEMPT", "class_name": "AttemptWorkflow" },
+        { "name": "regatta-land", "binding": "LAND", "class_name": "LandWorkflow" }
+      ]
+    }
+  }
+}
