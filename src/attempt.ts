@@ -9,6 +9,7 @@ import { errorSignature } from "./cluster";
 import { repoHost, type RepoHost } from "./repo-host";
 import { egressFor, sandboxFor, waitReady } from "./runtime";
 import { trailers } from "./trailers";
+import { commitPlan, commitSubject } from "./git-plan";
 import { quote } from "./sandbox";
 
 export interface AttemptParams {
@@ -60,31 +61,36 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
       });
       const fork = await waitReady(step, host, p.fork, "fork");
 
-      const tokenId = await step.do("sandbox", async () => {
+      const { tokenId, baseSha } = await step.do("sandbox", async () => {
         const token = await host.token(p.fork, "write", TOKEN_TTL);
-        await sandbox.prepare(egressFor(this.env, { [fork.remote]: token.secret }));
-        const r = await sandbox.sh(`rm -rf repo && git clone --quiet ${quote(fork.remote)} repo`, { inRepo: false });
-        if (r.exitCode !== 0) throw new Error(`clone failed: ${r.stderr}`);
-        return token.id;
+        try {
+          await sandbox.prepare(egressFor(this.env, { [fork.remote]: token.secret }));
+          const r = await sandbox.sh(`rm -rf repo && git clone --quiet ${quote(fork.remote)} repo`, { inRepo: false });
+          if (r.exitCode !== 0) throw new Error(`clone failed: ${r.stderr}`);
+          // Diffs are taken against this, not the index, so a retried commit step reports the same change.
+          const base = (await sandbox.sh("git rev-parse HEAD")).stdout.trim();
+          return { tokenId: token.id, baseSha: base };
+        } catch (e) {
+          // Each retry mints a new token; don't leave the failed one live.
+          await host.revokeToken(p.fork, token.id);
+          throw e;
+        }
       });
 
       const result = await this.agentLoop(p, step, sandbox, campaign);
 
       const report = await step.do("commit", async () => {
+        await this.requireSandbox(sandbox);
         const verify = await sandbox.sh(p.check, { timeoutSeconds: 900 });
         const green = verify.exitCode === 0;
         await sandbox.sh("git add -A");
-        const names = await sandbox.sh("git diff --cached --name-only");
-        const changedFiles = names.stdout.split("\n").filter(Boolean);
-        const numstat = await sandbox.sh("git diff --cached --numstat");
-        const diffSize = numstat.stdout
-          .split("\n")
-          .filter(Boolean)
-          .reduce((n, l) => n + l.split("\t").slice(0, 2).reduce((a, x) => a + (Number(x) || 0), 0), 0);
-        const diff = (await sandbox.sh("git diff --cached")).stdout;
-        let headSha: string | null = null;
-        if (changedFiles.length) {
-          const msg = `${result.summary || p.intent}\n\n${trailers({
+        const staged = (await sandbox.sh("git diff --cached --quiet")).exitCode !== 0;
+        const headMsg = (await sandbox.sh("git log -1 --format=%B")).stdout;
+        const ahead = Number((await sandbox.sh(`git rev-list --count ${quote(`origin/${fork.defaultBranch}`)}..HEAD`)).stdout.trim()) > 0;
+        const plan = commitPlan({ staged, headIsOurs: headMsg.includes(`Regatta-Attempt: ${p.attemptId}`), aheadOfOrigin: ahead });
+
+        if (plan.commit) {
+          const msg = `${commitSubject(result.summary, p.intent)}\n\n${trailers({
             campaign: p.campaignId,
             attempt: p.attemptId,
             intent: p.intent,
@@ -96,10 +102,21 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
           await sandbox.writeFile("/workspace/.commit-msg", msg);
           const commit = await sandbox.sh("git -c user.name=regatta -c user.email=regatta@localhost commit --quiet -F /workspace/.commit-msg");
           if (commit.exitCode !== 0) throw new Error(`commit failed: ${commit.stderr}`);
+        }
+        if (plan.push) {
           const push = await sandbox.sh(`git push --quiet origin HEAD:${quote(fork.defaultBranch)}`);
           if (push.exitCode !== 0) throw new Error(`push failed: ${push.stderr}`);
-          headSha = (await sandbox.sh("git rev-parse HEAD")).stdout.trim();
         }
+
+        // Everything below compares against the clone's base, so it is stable across retries.
+        const range = `${baseSha}..HEAD`;
+        const changedFiles = (await sandbox.sh(`git diff --name-only ${range}`)).stdout.split("\n").filter(Boolean);
+        const diffSize = (await sandbox.sh(`git diff --numstat ${range}`)).stdout
+          .split("\n")
+          .filter(Boolean)
+          .reduce((n, l) => n + l.split("\t").slice(0, 2).reduce((a, x) => a + (Number(x) || 0), 0), 0);
+        const diff = (await sandbox.sh(`git diff ${range}`)).stdout;
+        const head = (await sandbox.sh("git rev-parse HEAD")).stdout.trim();
         return {
           attemptId: p.attemptId,
           target: p.target,
@@ -112,7 +129,7 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
           rationale: result.rationale,
           problem: result.problem,
           alternatives: result.alternatives,
-          headSha,
+          headSha: head === baseSha ? null : head,
           turns: result.turns,
         } satisfies AttemptReport;
       });
@@ -194,7 +211,10 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
       }
 
       const results = JSON.parse(
-        await step.do(`tools-${turn}`, async () => {
+        // No retries: tools have side effects (blackboard posts, the andon cord).
+        // Errors inside a tool go back to the model as is_error results instead.
+        await step.do(`tools-${turn}`, { retries: { limit: 0, delay: "1 second" } }, async () => {
+          await this.requireSandbox(sandbox);
           const out: Anthropic.Beta.BetaToolResultBlockParam[] = [];
           for (const call of calls) out.push(await this.runTool(call, p, sandbox, campaign));
           return JSON.stringify(out);
@@ -203,6 +223,15 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
       messages.push({ role: "user", content: results });
     }
     return { ...ledger, turns: MAX_TURNS };
+  }
+
+  // Model turns replay from cached steps, but the container's checkout does
+  // not survive a restart. Fail the attempt with a clear reason instead of
+  // letting every later tool error confusingly.
+  private async requireSandbox(sandbox: ReturnType<typeof sandboxFor>) {
+    if (!(await sandbox.alive())) {
+      throw new Error("sandbox lost: the container restarted and its checkout is gone; rerun the attempt");
+    }
   }
 
   private async runTool(

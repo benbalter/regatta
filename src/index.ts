@@ -1,8 +1,10 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
+import { HTTPException } from "hono/http-exception";
 import type { CampaignSpec } from "./campaign";
 import { UI } from "./ui";
 import { why } from "./why";
+import { repoHost } from "./repo-host";
 
 export { Campaign } from "./campaign";
 export { Sandbox, Egress } from "./sandbox";
@@ -13,12 +15,16 @@ const app = new Hono<{ Bindings: Env }>();
 const index = (env: Env) => env.CAMPAIGN.getByName("_index");
 
 // One admin token guards anything that spends money or writes to repos.
-// Reads stay open so judges can browse a running campaign.
-app.use("/api/*", async (c, next) => {
-  if (c.req.method === "GET" || !c.env.REGATTA_ADMIN_TOKEN) return next();
+// Fail closed: only local dev against the fake Artifacts runs without one.
+const requireAdmin: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  if (c.env.FAKE_ARTIFACTS_URL) return next();
+  if (!c.env.REGATTA_ADMIN_TOKEN) return c.json({ error: "REGATTA_ADMIN_TOKEN is not configured" }, 503);
   const auth: MiddlewareHandler<{ Bindings: Env }> = bearerAuth({ token: c.env.REGATTA_ADMIN_TOKEN });
   return auth(c, next);
-});
+};
+
+// Reads stay open so judges can browse a running campaign.
+app.use("/api/*", async (c, next) => (c.req.method === "GET" ? next() : requireAdmin(c, next)));
 
 app.get("/", (c) => c.html(UI));
 
@@ -63,16 +69,31 @@ app.post("/api/campaigns/:id/halt", async (c) => {
 
 app.post("/api/campaigns/:id/resume", async (c) => {
   const { by } = await c.req.json<{ by?: string }>().catch(() => ({ by: undefined }));
-  await c.env.CAMPAIGN.getByName(c.req.param("id")).resume(by?.trim() || "a human");
-  return c.json({ ok: true });
+  const relaunched = await c.env.CAMPAIGN.getByName(c.req.param("id")).resume(by?.trim() || "a human");
+  return c.json({ ok: true, relaunched });
 });
 
+// Answers are cached per commit, so anyone can read them. A cache miss mints
+// a repo token and may start a container, so it needs the admin token.
 app.get("/api/why", async (c) => {
   const { repo, path, line } = c.req.query();
   if (!repo || !path || !Number(line)) return c.json({ error: "repo, path and line are required" }, 400);
   try {
-    return c.json(await why(c.env, repo, path, Number(line)));
+    const head = (await repoHost(c.env).log(repo, "HEAD", 1))[0]?.hash;
+    if (!head) return c.json({ error: `${repo} has no commits` }, 404);
+    const key = `${repo}@${head}:${path}:${Number(line)}`;
+    const cached = await index(c.env).cachedWhy(key);
+    if (cached) return c.body(cached, 200, { "content-type": "application/json" });
+    let answer: string | undefined;
+    const compute = async () => {
+      answer = JSON.stringify(await why(c.env, repo, path, Number(line)));
+      await index(c.env).storeWhy(key, answer);
+    };
+    const denied = await requireAdmin(c, compute);
+    if (denied) return denied;
+    return c.body(answer!, 200, { "content-type": "application/json" });
   } catch (e) {
+    if (e instanceof HTTPException) throw e; // bearerAuth's 401, not a lookup failure
     return c.json({ error: (e as Error).message }, 404);
   }
 });

@@ -4,6 +4,7 @@
 // the Artifacts token on the way out. The container never sees a credential.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { matchRepoAuth } from "./git-plan";
 
 export interface EgressProps {
   /** Hosts the sandbox may reach directly (package registries). */
@@ -18,10 +19,10 @@ export class Egress extends WorkerEntrypoint<Env, EgressProps> {
   async fetch(req: Request): Promise<Response> {
     const { allow, repoAuth, rewrite } = this.ctx.props;
     const url = new URL(req.url);
-    const auth = Object.entries(repoAuth).find(([prefix]) => `${url.origin}${url.pathname}`.startsWith(prefix));
-    if (auth) {
+    const secret = matchRepoAuth(`${url.origin}${url.pathname}`, repoAuth);
+    if (secret) {
       const headers = new Headers(req.headers);
-      headers.set("authorization", `Basic ${btoa(`x:${auth[1]}`)}`);
+      headers.set("authorization", `Basic ${btoa(`x:${secret}`)}`);
       const target = rewrite[url.host] ? new URL(url.pathname + url.search, rewrite[url.host]) : url;
       return fetch(new Request(target, { method: req.method, headers, body: req.body, redirect: "manual" }));
     }
@@ -87,6 +88,17 @@ export class Sandbox extends DurableObject<Env> {
     return this.sh(`mkdir -p "$(dirname -- ${quote(path)})" && printf %s ${quote(b64)} | base64 -d > ${quote(path)}`, {
       inRepo: !path.startsWith("/"),
     });
+  }
+
+  /** True when the container is up and still has the repo checkout. */
+  async alive(): Promise<boolean> {
+    const c = this.container();
+    if (!c.running) return false;
+    try {
+      return (await this.raw(["test", "-d", "/workspace/repo/.git"])).exitCode === 0;
+    } catch {
+      return false;
+    }
   }
 
   async destroy(): Promise<void> {

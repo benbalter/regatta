@@ -8,6 +8,7 @@ import type { AttemptParams, AttemptReport } from "./attempt";
 import { clusterOutcomes, defaultWinners, errorSignature, type Cluster } from "./cluster";
 import { DEFAULT_POLICY, evaluate, type Policy, type Verdict } from "./policy";
 import { repoHost } from "./repo-host";
+import { relaunchAfterHalt } from "./campaign-logic";
 
 export interface TargetSpec {
   /** Display name, e.g. "jekyll-titles-from-headings". */
@@ -90,6 +91,7 @@ export class Campaign extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS fixes (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS campaigns (id TEXT PRIMARY KEY, intent TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS whys (k TEXT PRIMARY KEY, json TEXT NOT NULL);
     `);
   }
 
@@ -104,6 +106,15 @@ export class Campaign extends DurableObject<Env> {
       .exec<{ id: string; intent: string; created_at: string }>("SELECT * FROM campaigns ORDER BY created_at DESC")
       .toArray()
       .map((r) => ({ id: r.id, intent: r.intent, createdAt: r.created_at }));
+  }
+
+  /** `why` answers are immutable per commit, so cache them by repo@sha:path:line. */
+  async cachedWhy(key: string): Promise<string | null> {
+    return this.sql.exec<{ json: string }>("SELECT json FROM whys WHERE k = ?", key).toArray()[0]?.json ?? null;
+  }
+
+  async storeWhy(key: string, json: string): Promise<void> {
+    this.sql.exec("INSERT OR REPLACE INTO whys VALUES (?, ?)", key, json);
   }
 
   // --- campaign lifecycle ---------------------------------------------------
@@ -127,6 +138,9 @@ export class Campaign extends DurableObject<Env> {
     const id = this.meta("id")!;
     const spec = this.spec();
     const attemptId = `${id}-${slug(target)}-${suffix}`;
+    // Reports and fix posts can interleave while we await the Workflow
+    // binding, so the same id may already be launched.
+    if (this.attempt(attemptId)) return;
     const rec: AttemptRecord = {
       id: attemptId,
       target,
@@ -164,11 +178,18 @@ export class Campaign extends DurableObject<Env> {
     this.logHalt({ ...h, at: new Date().toISOString() }, "halt");
   }
 
-  async resume(by: string): Promise<void> {
+  async resume(by: string): Promise<string[]> {
     const h = this.halted();
-    if (!h) return;
+    if (!h) return [];
     this.sql.exec("DELETE FROM meta WHERE k = 'halt'");
     this.logHalt({ by, reason: `resumed after: ${h.reason}`, at: new Date().toISOString() }, "resume");
+    // Restarting the line restarts the work it stopped.
+    const relaunched: string[] = [];
+    for (const r of relaunchAfterHalt(this.attempts())) {
+      await this.launch(r.target, r.base, r.suffix, r.retryOf, []);
+      relaunched.push(r.target);
+    }
+    return relaunched;
   }
 
   halted(): Halt | null {
@@ -215,7 +236,10 @@ export class Campaign extends DurableObject<Env> {
     const byTarget = new Map<string, AttemptRecord[]>();
     for (const a of attempts) byTarget.set(a.target, [...(byTarget.get(a.target) ?? []), a]);
 
-    for (const [target, list] of byTarget) {
+    for (const target of byTarget.keys()) {
+      // Re-read just before deciding: an earlier launch in this loop awaited
+      // the Workflow binding, and another event may have changed this target.
+      const list = this.attempts().filter((a) => a.target === target);
       if (list.some((a) => a.state === "running" || a.report?.green)) continue;
       const red = list.filter((a) => a.report && errorSignature(a.report.failureLog) === signature);
       if (!red.length) continue;

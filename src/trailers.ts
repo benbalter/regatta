@@ -32,13 +32,17 @@ const KEYS: Array<[keyof RegattaTrailers, string]> = [
 // Trailer values may continue onto following lines when indented, per git-interpret-trailers.
 export function trailers(t: Partial<RegattaTrailers>): string {
   return KEYS.filter(([k]) => t[k]?.trim())
-    .map(([k, name]) => `${name}: ${t[k]!.trim().split("\n").join("\n ")}`)
+    // Blank lines inside a value would end the trailer block, so drop them.
+    .map(([k, name]) => `${name}: ${t[k]!.trim().split("\n").filter((l) => l.trim()).join("\n ")}`)
     .join("\n");
 }
 
+// Only the final paragraph is the trailer block, as with git-interpret-trailers.
+// Reading every line would let an agent-written subject or body forge one.
 export function parseTrailers(message: string): Partial<RegattaTrailers> {
   const out: Partial<RegattaTrailers> = {};
-  const lines = message.split("\n");
+  const paragraphs = message.replace(/\s+$/, "").split(/\n[ \t]*\n/);
+  const lines = (paragraphs.at(-1) ?? "").split("\n");
   for (let i = 0; i < lines.length; i++) {
     const hit = KEYS.find(([, name]) => lines[i].startsWith(`${name}: `));
     if (!hit) continue;
