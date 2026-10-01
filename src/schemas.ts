@@ -74,6 +74,7 @@ export const ClaimConflict = z
     paths: z.array(z.string()).describe("This attempt's claims that overlap the other race's"),
     theirs: z.array(z.string()),
     plan: z.string(),
+    landed: z.boolean().describe("The other race already landed this work"),
   })
   .openapi("ClaimConflict", { description: "Another race has announced overlapping work in the same repo." });
 
@@ -140,12 +141,29 @@ export const FeedEvent = z
   .object({
     id: z.number().int(),
     at: z.string(),
-    kind: z.enum(["sync", "launch", "announce", "conflict", "fix", "retry", "finish", "halt", "resume", "land"]),
+    kind: z.enum(["sync", "launch", "announce", "conflict", "fix", "retry", "finish", "halt", "resume", "decision", "land"]),
     target: z.string().nullable(),
     attempt: z.string().nullable(),
     text: z.string(),
   })
   .openapi("FeedEvent", { description: "One line in the race's live feed." });
+
+export const DecisionDoc = z
+  .object({
+    clusterKey: z.string(),
+    basis: z.string().describe("The attempt ids this doc was written about; new attempts make it stale"),
+    problem: z.string(),
+    options: z.array(z.object({ attempt: z.string(), target: z.string(), summary: z.string(), tradeoffs: z.string() })),
+    recommendation: z.string(),
+    ask: z.string().describe("What the reviewer is actually being asked to decide"),
+    dissent: z
+      .object({ argument: z.string(), strongestAlternative: z.string(), model: z.string() })
+      .nullable()
+      .describe("A second model's case against the recommendation. Approval must answer it."),
+    model: z.string(),
+    generatedAt: z.string(),
+  })
+  .openapi("DecisionDoc", { description: "One page for the human: the decision, not the diffs." });
 
 export const SyncStatus = z.enum(["imported", "up-to-date", "fast-forwarded", "merged", "conflict", "failed"]);
 
@@ -160,6 +178,7 @@ export const RaceView = z
     approved: z.array(z.string()),
     halt: Halt.nullable(),
     feed: z.array(FeedEvent).describe("Newest last; the most recent 300"),
+    decisionDocs: z.record(z.string(), DecisionDoc).describe("Cluster key → decision doc, for clusters escalated to review"),
     sync: z.record(z.string(), z.object({ status: z.union([SyncStatus, z.literal("syncing")]), detail: z.string() })),
   })
   .openapi("Race");
@@ -171,8 +190,10 @@ export const ApproveRequest = z
     key: z.string().describe("Cluster key from the race view"),
     overrides: z.record(z.string(), z.string()).optional().describe("Target → attempt id, to pick a different fork than the default winner"),
     approvedBy: z.string().optional(),
-    dissent: z.string().optional(),
-    dissentResponse: z.string().optional().describe("Required answer to the decision doc's dissent; saved on the merge commit"),
+    dissentResponse: z
+      .string()
+      .optional()
+      .describe("Required when the cluster's decision doc has a dissent: your answer to it, saved on each landing merge"),
   })
   .openapi("ApproveRequest");
 
@@ -219,3 +240,4 @@ export type WhyAnswer = z.infer<typeof WhyAnswer>;
 export type Announcement = z.infer<typeof Announcement>;
 export type ClaimConflict = z.infer<typeof ClaimConflict>;
 export type FeedEvent = z.infer<typeof FeedEvent>;
+export type DecisionDoc = z.infer<typeof DecisionDoc>;

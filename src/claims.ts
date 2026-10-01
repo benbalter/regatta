@@ -52,7 +52,9 @@ export function undeclared(changed: string[], announced: string[]): string[] {
 // exactly when one is needed: policy may say "auto", but a claim conflict
 // turns it into "review". A blocked cluster stays blocked.
 export function escalateForConflicts(v: Verdict, conflicts: Record<string, ClaimConflict[]>): Verdict {
-  const lines = Object.entries(conflicts).flatMap(([target, cs]) => cs.map((c) => `${target}: race ${c.race} also claims ${c.paths.join(", ")}`));
+  const lines = Object.entries(conflicts).flatMap(([target, cs]) =>
+    cs.map((c) => `${target}: race ${c.race} ${c.landed ? "already landed changes to" : "also claims"} ${c.paths.join(", ")}`),
+  );
   if (!lines.length || v.decision === "blocked") return v;
   return { decision: "review", reasons: [...(v.decision === "review" ? v.reasons : []), ...lines] };
 }

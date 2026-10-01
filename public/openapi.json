@@ -204,6 +204,13 @@
             },
             "description": "Newest last; the most recent 300"
           },
+          "decisionDocs": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DecisionDoc"
+            },
+            "description": "Cluster key → decision doc, for clusters escalated to review"
+          },
           "sync": {
             "type": "object",
             "additionalProperties": {
@@ -251,6 +258,7 @@
           "approved",
           "halt",
           "feed",
+          "decisionDocs",
           "sync"
         ]
       },
@@ -582,6 +590,10 @@
           },
           "plan": {
             "type": "string"
+          },
+          "landed": {
+            "type": "boolean",
+            "description": "The other race already landed this work"
           }
         },
         "required": [
@@ -589,7 +601,8 @@
           "attempt",
           "paths",
           "theirs",
-          "plan"
+          "plan",
+          "landed"
         ],
         "description": "Another race has announced overlapping work in the same repo."
       },
@@ -679,6 +692,7 @@
               "finish",
               "halt",
               "resume",
+              "decision",
               "land"
             ]
           },
@@ -708,6 +722,95 @@
         ],
         "description": "One line in the race's live feed."
       },
+      "DecisionDoc": {
+        "type": "object",
+        "properties": {
+          "clusterKey": {
+            "type": "string"
+          },
+          "basis": {
+            "type": "string",
+            "description": "The attempt ids this doc was written about; new attempts make it stale"
+          },
+          "problem": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "attempt": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "tradeoffs": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "attempt",
+                "target",
+                "summary",
+                "tradeoffs"
+              ]
+            }
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "ask": {
+            "type": "string",
+            "description": "What the reviewer is actually being asked to decide"
+          },
+          "dissent": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "argument": {
+                "type": "string"
+              },
+              "strongestAlternative": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "argument",
+              "strongestAlternative",
+              "model"
+            ],
+            "description": "A second model's case against the recommendation. Approval must answer it."
+          },
+          "model": {
+            "type": "string"
+          },
+          "generatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "clusterKey",
+          "basis",
+          "problem",
+          "options",
+          "recommendation",
+          "ask",
+          "dissent",
+          "model",
+          "generatedAt"
+        ],
+        "description": "One page for the human: the decision, not the diffs."
+      },
       "ApproveRequest": {
         "type": "object",
         "properties": {
@@ -725,12 +828,9 @@
           "approvedBy": {
             "type": "string"
           },
-          "dissent": {
-            "type": "string"
-          },
           "dissentResponse": {
             "type": "string",
-            "description": "Required answer to the decision doc's dissent; saved on the merge commit"
+            "description": "Required when the cluster's decision doc has a dissent: your answer to it, saved on each landing merge"
           }
         },
         "required": [
@@ -1122,6 +1222,95 @@
           },
           "409": {
             "description": "Blocked by policy or the andon cord",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server has no admin token configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/races/{id}/decision-docs": {
+      "post": {
+        "operationId": "writeDecisionDocs",
+        "summary": "Rewrite the decision docs for clusters escalated to review",
+        "description": "Docs are written automatically when a race settles; this regenerates them, for example after changing the dissent model. Costs model tokens.",
+        "tags": [
+          "review"
+        ],
+        "security": [
+          {
+            "admin": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "cmuptjeil"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Docs are being written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Attempts are still running",
             "content": {
               "application/json": {
                 "schema": {

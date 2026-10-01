@@ -11,7 +11,7 @@ describe("OpenAPI contract", () => {
   it("documents every route with an operationId", () => {
     const spec = getOpenAPISpec();
     const ops = Object.values(spec.paths ?? {}).flatMap((p) => Object.values(p as Record<string, { operationId?: string }>).map((o) => o.operationId));
-    expect(ops.sort()).toEqual(["approveCluster", "getRace", "listRaces", "pullAndonCord", "resumeRace", "startRace", "why"]);
+    expect(ops.sort()).toEqual(["approveCluster", "getRace", "listRaces", "pullAndonCord", "resumeRace", "startRace", "why", "writeDecisionDocs"]);
   });
 
   it("marks writes as admin-only and reads as open", () => {

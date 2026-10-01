@@ -6,6 +6,7 @@ export { Sandbox, Egress } from "./sandbox";
 export { AttemptWorkflow } from "./attempt";
 export { LandWorkflow } from "./land";
 export { SyncWorkflow } from "./sync";
+export { DecisionWorkflow } from "./decision-workflow";
 
 app.get("/", (c) => c.html(UI));
 // The contract, live. scripts/build-openapi.ts writes the same document to public/openapi.json.

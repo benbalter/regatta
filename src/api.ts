@@ -126,10 +126,31 @@ app.openapi(
       const landing = await c.env.RACE.getByName(c.req.valid("param").id).approve(body.key, {
         overrides: body.overrides,
         approvedBy: body.approvedBy?.trim() || "a human reviewer",
-        dissent: body.dissent,
         dissentResponse: body.dissentResponse,
       });
       return c.json({ landing }, 200);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 409);
+    }
+  },
+);
+
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/api/races/{id}/decision-docs",
+    operationId: "writeDecisionDocs",
+    summary: "Rewrite the decision docs for clusters escalated to review",
+    description: "Docs are written automatically when a race settles; this regenerates them, for example after changing the dissent model. Costs model tokens.",
+    tags: ["review"],
+    security: admin,
+    request: { params: RaceId },
+    responses: { 202: json(z.object({ ok: z.literal(true) }), "Docs are being written"), 409: json(S.ApiError, "Attempts are still running"), ...errors },
+  }),
+  async (c) => {
+    try {
+      await c.env.RACE.getByName(c.req.valid("param").id).writeDecisionDocs();
+      return c.json({ ok: true as const }, 202);
     } catch (e) {
       return c.json({ error: (e as Error).message }, 409);
     }

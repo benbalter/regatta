@@ -14,12 +14,19 @@ import { escalateForConflicts, overlapping, undeclared } from "./claims";
 
 // Types come from the API contract (src/schemas.ts) so spec and code can't drift.
 export type { AttemptRecord, AttemptState, ClusterView, Fix, Halt, RaceSpec, RaceView, TargetSpec } from "./schemas";
-import type { AttemptRecord, ClaimConflict, FeedEvent, Fix, Halt, RaceSpec, RaceView, SyncStatus, TargetSpec } from "./schemas";
+import type { AttemptRecord, ClaimConflict, DecisionDoc, FeedEvent, Fix, Halt, RaceSpec, RaceView, SyncStatus, TargetSpec } from "./schemas";
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
 // Base repos are shared across races so each target is imported once.
 export const baseName = (t: TargetSpec) => `base-${slug(t.name)}`;
 const MAX_RETRIES_PER_TARGET = 2;
+
+async function shortHash(s: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(digest).slice(0, 6)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const isSettled = (attempts: AttemptRecord[]) => !attempts.some((a) => a.state === "running");
 
 export class Race extends DurableObject<Env> {
   private sql = this.ctx.storage.sql;
@@ -32,6 +39,7 @@ export class Race extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS fixes (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS races (id TEXT PRIMARY KEY, intent TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS whys (k TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS docs (cluster TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS feed (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS claims (attempt TEXT PRIMARY KEY, base TEXT NOT NULL, race TEXT NOT NULL, json TEXT NOT NULL, active INTEGER NOT NULL);
     `);
@@ -70,16 +78,23 @@ export class Race extends DurableObject<Env> {
 
   async conflicts(base: string, race: string, paths: string[]): Promise<ClaimConflict[]> {
     const rows = this.sql
-      .exec<{ json: string }>("SELECT json FROM claims WHERE base = ? AND race != ? AND active = 1", base, race)
+      // active = 1: announced and still in play; active = 2: already landed.
+      .exec<{ json: string; active: number }>("SELECT json, active FROM claims WHERE base = ? AND race != ? AND active > 0", base, race)
       .toArray()
-      .map((r) => JSON.parse(r.json) as { race: string; attempt: string; paths: string[]; plan: string });
+      .map((r) => ({ ...(JSON.parse(r.json) as { race: string; attempt: string; paths: string[]; plan: string }), landed: r.active === 2 }));
     return rows
-      .map((o) => ({ race: o.race, attempt: o.attempt, paths: overlapping(paths, o.paths), theirs: o.paths, plan: o.plan }))
+      .map((o) => ({ race: o.race, attempt: o.attempt, paths: overlapping(paths, o.paths), theirs: o.paths, plan: o.plan, landed: o.landed }))
       .filter((o) => o.paths.length);
   }
 
   async releaseClaim(attempt: string): Promise<void> {
     this.sql.exec("UPDATE claims SET active = 0 WHERE attempt = ?", attempt);
+  }
+
+  // Landed work stays visible to other races: their overlapping change now
+  // meets code that's already in the repo, which is more reason to look, not less.
+  async landClaim(attempt: string): Promise<void> {
+    this.sql.exec("UPDATE claims SET active = 2 WHERE attempt = ?", attempt);
   }
 
   // --- race lifecycle ---------------------------------------------------
@@ -159,7 +174,41 @@ export class Race extends DurableObject<Env> {
     this.event("finish", outcome + (rec.undeclared.length ? ` (undeclared: ${rec.undeclared.join(", ")})` : ""), { target: r.target, attempt: r.attemptId });
     // Only green work still needs its claim, until it lands.
     if (!r.green) await this.index().releaseClaim(r.attemptId);
+    await this.maybeWriteDecisionDocs();
     if (!r.green && !r.error) await this.retryWithFixes(errorSignature(r.failureLog));
+  }
+
+  // --- decision docs ------------------------------------------------------------
+  // Once nothing is running, write docs for clusters escalated to review. The
+  // workflow id is keyed on what's being decided, so a settled race with the
+  // same attempts doesn't pay for the same docs twice.
+
+  private async maybeWriteDecisionDocs(force = false): Promise<void> {
+    const attempts = this.attempts();
+    if (this.halted() || !isSettled(attempts)) return;
+    const basis = attempts.map((a) => a.id).sort().join(",");
+    const key = `${this.meta("id")}-docs-${await shortHash(basis)}${force ? `-${Date.now().toString(36)}` : ""}`;
+    if (!force && this.meta("docsRun") === key) return;
+    this.setMeta("docsRun", key);
+    await this.env.DECISION.create({ id: key, params: { raceId: this.meta("id")! } });
+  }
+
+  /** Regenerate decision docs on demand (for example after changing the dissent model). */
+  async writeDecisionDocs(): Promise<void> {
+    if (!isSettled(this.attempts())) throw new Error("attempts are still running");
+    this.sql.exec("DELETE FROM docs");
+    await this.maybeWriteDecisionDocs(true);
+  }
+
+  async storeDecision(doc: DecisionDoc): Promise<void> {
+    this.sql.exec("INSERT OR REPLACE INTO docs VALUES (?, ?)", doc.clusterKey, JSON.stringify(doc));
+    this.event("decision", `decision doc ready for "${doc.clusterKey.replace(/^\w+:/, "")}"${doc.dissent ? " (with a dissent to answer)" : ""}`, {});
+  }
+
+  private docs(): Record<string, DecisionDoc> {
+    return Object.fromEntries(
+      this.sql.exec<{ cluster: string; json: string }>("SELECT cluster, json FROM docs").toArray().map((r) => [r.cluster, JSON.parse(r.json)]),
+    );
   }
 
   // --- work loudly ----------------------------------------------------------
@@ -319,6 +368,7 @@ export class Race extends DurableObject<Env> {
       approved: JSON.parse(this.meta("approved") ?? "[]"),
       halt: this.halted(),
       feed: this.feed(),
+      decisionDocs: this.docs(),
       sync: JSON.parse(this.meta("sync") ?? "{}"),
     };
   }
@@ -326,9 +376,12 @@ export class Race extends DurableObject<Env> {
   /** Approve one cluster: land each target's chosen attempt. */
   async approve(
     clusterKey: string,
-    opts: { overrides?: Record<string, string>; approvedBy: string; dissent?: string; dissentResponse?: string },
+    opts: { overrides?: Record<string, string>; approvedBy: string; dissentResponse?: string },
   ): Promise<string[]> {
     const overrides = opts.overrides ?? {};
+    // The dissent comes from the stored doc, never the client, and has to be answered.
+    const dissent = this.docs()[clusterKey]?.dissent?.argument;
+    if (dissent && !opts.dissentResponse?.trim()) throw new Error("answer the dissent before approving: dissentResponse is required");
     const v = await this.view();
     if (!v) throw new Error("no such race");
     if (v.halt) throw new Error(`line is stopped: ${v.halt.reason}`);
@@ -354,8 +407,8 @@ export class Race extends DurableObject<Env> {
           clusterLabel: cluster.label,
           decision: `${cluster.verdict.decision}: ${cluster.verdict.reasons.join("; ")}`,
           approvedBy: opts.approvedBy,
-          dissent: opts.dissent,
-          dissentResponse: opts.dissentResponse,
+          dissent,
+          dissentResponse: opts.dissentResponse?.trim(),
         },
       });
       landing.push(attemptId);
@@ -372,7 +425,8 @@ export class Race extends DurableObject<Env> {
     rec.landError = error;
     this.save(rec);
     this.event("land", sha ? `landed ${sha.slice(0, 8)}` : `landing failed: ${error}`, { target: rec.target, attempt: attemptId });
-    await this.index().releaseClaim(attemptId);
+    if (sha) await this.index().landClaim(attemptId);
+    else await this.index().releaseClaim(attemptId);
   }
 
   // --- storage helpers ------------------------------------------------------

@@ -197,3 +197,25 @@ export async function modelTurn(
   }
   return client.beta.messages.create(body);
 }
+
+/** A single tool-less completion, for decision docs and dissents. Returns the text. */
+export async function complete(env: Env, spec: ModelSpec, system: string, user: string): Promise<string> {
+  const client = clientFor(env, spec);
+  const body: Anthropic.Beta.MessageCreateParamsNonStreaming = {
+    model: spec.model,
+    max_tokens: 8000,
+    system,
+    messages: [{ role: "user", content: user }],
+  };
+  const res =
+    spec.provider === "anthropic"
+      ? await client.beta.messages.create({
+          ...body,
+          output_config: { effort: "medium" },
+          betas: ["server-side-fallback-2026-07-01"],
+          fallbacks: "default",
+        })
+      : await client.beta.messages.create(body);
+  if (res.stop_reason === "refusal") throw new Error("model declined");
+  return res.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n");
+}

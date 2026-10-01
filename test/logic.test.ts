@@ -196,16 +196,67 @@ describe("claims (work loudly)", async () => {
 
   it("escalates auto clusters to review when another race claims the same paths", async () => {
     const { escalateForConflicts } = await import("../src/claims");
-    const conflict = { race: "r2", attempt: "r2-a1", paths: [".ruby-version"], theirs: [".ruby-version"], plan: "pin ruby" };
+    const conflict = { race: "r2", attempt: "r2-a1", paths: [".ruby-version"], theirs: [".ruby-version"], plan: "pin ruby", landed: false };
     expect(escalateForConflicts({ decision: "auto", reasons: ["green and within policy"] }, { foo: [conflict] })).toEqual({
       decision: "review",
       reasons: ["foo: race r2 also claims .ruby-version"],
     });
     expect(escalateForConflicts({ decision: "blocked", reasons: ["checks failing"] }, { foo: [conflict] }).decision).toBe("blocked");
     expect(escalateForConflicts({ decision: "auto", reasons: ["ok"] }, {}).decision).toBe("auto");
+    expect(escalateForConflicts({ decision: "auto", reasons: [] }, { foo: [{ ...conflict, landed: true }] }).reasons).toEqual([
+      "foo: race r2 already landed changes to .ruby-version",
+    ]);
   });
 
   it("finds changes the agent never announced", () => {
     expect(undeclared([".ruby-version", "Gemfile.lock", "lib/a.rb"], [".ruby-version", "lib/"])).toEqual(["Gemfile.lock"]);
+  });
+});
+
+describe("decision docs", async () => {
+  const { basisOf, dissentPrompt, docPrompt, needsDoc, parseJsonReply, DocBody } = await import("../src/decision");
+  const cluster = {
+    key: "green:.ruby-version",
+    kind: "green" as const,
+    label: "green, changed .ruby-version",
+    attempts: [
+      { attemptId: "r1-foo-a2", target: "foo", green: true, changedFiles: [".ruby-version"], failureLog: "", diffSize: 1 },
+      { attemptId: "r1-foo-a1", target: "foo", green: true, changedFiles: [".ruby-version"], failureLog: "", diffSize: 3 },
+    ],
+    targets: ["foo"],
+    verdict: { decision: "review" as const, reasons: ["foo: race r2 also claims .ruby-version"] },
+    winners: { foo: "r1-foo-a2" },
+    conflicts: {},
+  };
+
+  it("keys a doc on the attempts it describes, in stable order", () => {
+    expect(basisOf(cluster)).toBe("r1-foo-a1,r1-foo-a2");
+  });
+
+  it("writes docs only for review clusters without a current doc", () => {
+    const auto = { ...cluster, key: "x", verdict: { decision: "auto" as const, reasons: [] } };
+    expect(needsDoc([cluster, auto], {}).map((c) => c.key)).toEqual(["green:.ruby-version"]);
+    expect(needsDoc([cluster], { [cluster.key]: { basis: "r1-foo-a1,r1-foo-a2" } })).toEqual([]);
+    expect(needsDoc([cluster], { [cluster.key]: { basis: "r1-foo-a1" } })).toHaveLength(1);
+  });
+
+  it("tells the model why a human is needed and which fork is the default", () => {
+    const { user } = docPrompt("pin ruby", cluster, []);
+    expect(user).toContain("race r2 also claims .ruby-version");
+    expect(user).toContain("r1-foo-a2 (repo: foo, current default winner)");
+  });
+
+  it("asks the dissenter to argue against the recommendation", () => {
+    const doc = { problem: "p", options: [{ attempt: "a", target: "foo", summary: "s", tradeoffs: "t" }], recommendation: "take a", ask: "approve?" };
+    const { system, user } = dissentPrompt(doc, cluster);
+    expect(system).toMatch(/argue against the recommendation/);
+    expect(user).toContain("Recommendation: take a");
+  });
+
+  it("extracts JSON from fenced or chatty replies and rejects malformed ones", () => {
+    const good = { problem: "p", options: [], recommendation: "r", ask: "a" };
+    expect(parseJsonReply("Sure!\n```json\n" + JSON.stringify(good) + "\n```", DocBody)).toEqual(good);
+    expect(parseJsonReply('{"problem": "p"}', DocBody)).toBeNull();
+    expect(parseJsonReply("no json here", DocBody)).toBeNull();
   });
 });

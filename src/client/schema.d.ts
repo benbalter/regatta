@@ -62,6 +62,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/races/{id}/decision-docs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rewrite the decision docs for clusters escalated to review
+         * @description Docs are written automatically when a race settles; this regenerates them, for example after changing the dissent model. Costs model tokens.
+         */
+        post: operations["writeDecisionDocs"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/races/{id}/halt": {
         parameters: {
             query?: never;
@@ -168,6 +188,10 @@ export interface components {
             halt: components["schemas"]["Halt"];
             /** @description Newest last; the most recent 300 */
             feed: components["schemas"]["FeedEvent"][];
+            /** @description Cluster key → decision doc, for clusters escalated to review */
+            decisionDocs: {
+                [key: string]: components["schemas"]["DecisionDoc"];
+            };
             sync: {
                 [key: string]: {
                     status: ("imported" | "up-to-date" | "fast-forwarded" | "merged" | "conflict" | "failed") | "syncing";
@@ -258,6 +282,8 @@ export interface components {
             paths: string[];
             theirs: string[];
             plan: string;
+            /** @description The other race already landed this work */
+            landed: boolean;
         };
         /** @description A blackboard entry: one agent's fix, offered to every agent that hits the same error. */
         Fix: {
@@ -283,10 +309,34 @@ export interface components {
             id: number;
             at: string;
             /** @enum {string} */
-            kind: "sync" | "launch" | "announce" | "conflict" | "fix" | "retry" | "finish" | "halt" | "resume" | "land";
+            kind: "sync" | "launch" | "announce" | "conflict" | "fix" | "retry" | "finish" | "halt" | "resume" | "decision" | "land";
             target: string | null;
             attempt: string | null;
             text: string;
+        };
+        /** @description One page for the human: the decision, not the diffs. */
+        DecisionDoc: {
+            clusterKey: string;
+            /** @description The attempt ids this doc was written about; new attempts make it stale */
+            basis: string;
+            problem: string;
+            options: {
+                attempt: string;
+                target: string;
+                summary: string;
+                tradeoffs: string;
+            }[];
+            recommendation: string;
+            /** @description What the reviewer is actually being asked to decide */
+            ask: string;
+            /** @description A second model's case against the recommendation. Approval must answer it. */
+            dissent: {
+                argument: string;
+                strongestAlternative: string;
+                model: string;
+            } | null;
+            model: string;
+            generatedAt: string;
         };
         ApproveRequest: {
             /** @description Cluster key from the race view */
@@ -296,8 +346,7 @@ export interface components {
                 [key: string]: string;
             };
             approvedBy?: string;
-            dissent?: string;
-            /** @description Required answer to the decision doc's dissent; saved on the merge commit */
+            /** @description Required when the cluster's decision doc has a dissent: your answer to it, saved on each landing merge */
             dissentResponse?: string;
         };
         HaltRequest: {
@@ -506,6 +555,67 @@ export interface operations {
                 };
             };
             /** @description Blocked by policy or the andon cord */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server has no admin token configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    writeDecisionDocs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Docs are being written */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        ok: true;
+                    };
+                };
+            };
+            /** @description Malformed request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or wrong admin token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Attempts are still running */
             409: {
                 headers: {
                     [name: string]: unknown;
