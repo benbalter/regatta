@@ -10,6 +10,7 @@ import { repoHost, type RepoHost } from "./repo-host";
 import { egressFor, sandboxFor, waitReady } from "./runtime";
 import { trailers } from "./trailers";
 import { commitPlan, commitSubject } from "./git-plan";
+import { parseCacheResult, restoreScript, saveScript } from "./cache";
 import { quote } from "./git-plan";
 
 export interface AttemptParams {
@@ -53,6 +54,9 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
           if (r.exitCode !== 0) throw new Error(`clone failed: ${r.stderr}`);
           // Diffs are taken against this, not the index, so a retried commit step reports the same change.
           const base = (await sandbox.sh("git rev-parse HEAD")).stdout.trim();
+          // Warm start: restore installed gems from R2 if this dependency set has been seen.
+          const cache = parseCacheResult((await sandbox.sh(restoreScript, { timeoutSeconds: 300 })).stdout);
+          await race.note("cache", p.target, p.attemptId, cache.status === "hit" ? "gems restored from the R2 cache" : "cold start: no cached gems for these dependencies yet");
           return { tokenId: token.id, baseSha: base };
         } catch (e) {
           // Each retry mints a new token; don't leave the failed one live.
@@ -67,6 +71,11 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
         await this.requireSandbox(sandbox);
         const verify = await sandbox.sh(p.check, { timeoutSeconds: 900 });
         const green = verify.exitCode === 0;
+        // Only a passing install is worth caching for the next boat.
+        if (green) {
+          const saved = parseCacheResult((await sandbox.sh(saveScript, { timeoutSeconds: 300 })).stdout);
+          if (saved.status === "saved") await race.note("cache", p.target, p.attemptId, "saved installed gems to the R2 cache for the next boat");
+        }
         await sandbox.sh("git add -A");
         const staged = (await sandbox.sh("git diff --cached --quiet")).exitCode !== 0;
         const headMsg = (await sandbox.sh("git log -1 --format=%B")).stdout;

@@ -96,6 +96,7 @@ const FLAG: Record<string, string> = {
   resume: "bg-flag-green",
   decision: "bg-flag-yellow",
   land: "bg-flag-green",
+  cache: "bg-muted",
 };
 const Swatch = ({ k, pulse }: { k: string; pulse?: boolean }) => (
   <span className={`inline-block size-2.5 shrink-0 rounded-[2px] ${FLAG[k] ?? "bg-muted"} ${pulse ? "animate-pulse" : ""}`} />

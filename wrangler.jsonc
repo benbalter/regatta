@@ -25,6 +25,8 @@
       "images": { "sandbox": { "dockerfile": "./Dockerfile" } }
     }
   ],
+  // Installed-dependency cache for sandboxes (see src/cache.ts).
+  "r2_buckets": [{ "binding": "CACHE", "bucket_name": "regatta-cache" }],
   "workflows": [
     { "name": "regatta-attempt", "binding": "ATTEMPT", "class_name": "AttemptWorkflow" },
     { "name": "regatta-land", "binding": "LAND", "class_name": "LandWorkflow" },
@@ -64,7 +66,9 @@
           "images": { "sandbox": { "dockerfile": "./Dockerfile" } }
         }
       ],
-      "workflows": [
+      // Installed-dependency cache for sandboxes (see src/cache.ts).
+  "r2_buckets": [{ "binding": "CACHE", "bucket_name": "regatta-cache" }],
+  "workflows": [
         { "name": "regatta-attempt", "binding": "ATTEMPT", "class_name": "AttemptWorkflow" },
         { "name": "regatta-land", "binding": "LAND", "class_name": "LandWorkflow" },
     { "name": "regatta-sync", "binding": "SYNC", "class_name": "SyncWorkflow" },

@@ -5,6 +5,7 @@
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { matchRepoAuth } from "./git-plan";
+import { CACHE_HOST, isCacheKey } from "./cache";
 
 export interface EgressProps {
   /** Hosts the sandbox may reach directly (package registries). */
@@ -19,6 +20,7 @@ export class Egress extends WorkerEntrypoint<Env, EgressProps> {
   async fetch(req: Request): Promise<Response> {
     const { allow, repoAuth, rewrite } = this.ctx.props;
     const url = new URL(req.url);
+    if (url.hostname === CACHE_HOST) return this.cache(req, url);
     const secret = matchRepoAuth(`${url.origin}${url.pathname}`, repoAuth);
     if (secret) {
       const headers = new Headers(req.headers);
@@ -28,6 +30,25 @@ export class Egress extends WorkerEntrypoint<Env, EgressProps> {
     }
     if (allow.includes(url.hostname)) return fetch(req);
     return new Response(`regatta egress: ${url.hostname} is not allowed`, { status: 403 });
+  }
+
+  // The dependency cache, served from R2. Only well-formed keys; no listing or deletes.
+  private async cache(req: Request, url: URL): Promise<Response> {
+    if (!isCacheKey(url.pathname)) return new Response("bad cache key", { status: 400 });
+    const key = url.pathname.slice(1);
+    if (req.method === "GET" || req.method === "HEAD") {
+      const obj = await this.env.CACHE.get(key);
+      if (!obj) return new Response(null, { status: 404 });
+      return new Response(req.method === "HEAD" ? null : obj.body, { headers: { "content-length": String(obj.size) } });
+    }
+    if (req.method === "PUT") {
+      const size = Number(req.headers.get("content-length"));
+      // Bound what a sandbox can write: one tarball, no larger than 1 GB.
+      if (!size || size > 1_000_000_000) return new Response("missing or oversized body", { status: 413 });
+      await this.env.CACHE.put(key, req.body);
+      return new Response(null, { status: 201 });
+    }
+    return new Response("method not allowed", { status: 405 });
   }
 }
 

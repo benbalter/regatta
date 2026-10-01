@@ -260,3 +260,28 @@ describe("decision docs", async () => {
     expect(parseJsonReply("no json here", DocBody)).toBeNull();
   });
 });
+
+describe("R2 dependency cache", async () => {
+  const { isCacheKey, parseCacheResult, restoreScript, saveScript } = await import("../src/cache");
+
+  it("accepts only well-formed keys, so a sandbox can't read or write arbitrary objects", () => {
+    expect(isCacheKey("/gems/0123456789abcdef0123456789abcdef.tgz")).toBe(true);
+    expect(isCacheKey("/gems/../secrets.tgz")).toBe(false);
+    expect(isCacheKey("/gems/short.tgz")).toBe(false);
+    expect(isCacheKey("/other/0123456789abcdef0123456789abcdef.tgz")).toBe(false);
+  });
+
+  it("reads the scripts' last line as the outcome", () => {
+    const key = "0123456789abcdef0123456789abcdef";
+    expect(parseCacheResult(`noise\nhit ${key}\n`)).toEqual({ status: "hit", key });
+    expect(parseCacheResult(`miss ${key}`).status).toBe("miss");
+    expect(parseCacheResult(`save failed ${key}`).status).toBe("unknown");
+    expect(parseCacheResult("curl: (6) could not resolve").status).toBe("unknown");
+  });
+
+  it("keys on tracked dependency files and the Ruby version, identically for restore and save", () => {
+    const key = (s: string) => s.split("\n")[0];
+    expect(key(restoreScript)).toBe(key(saveScript));
+    expect(key(restoreScript)).toMatch(/git ls-files .*Gemfile Gemfile\.lock '\*\.gemspec'.*ruby -v/);
+  });
+});

@@ -242,6 +242,11 @@ export class Race extends Agent<Env, RaceLiveState> {
     this.event("conflict", text, { target, attempt: attemptId });
   }
 
+  /** A feed line from a workflow (cache hits and saves, for now). */
+  async note(kind: "cache", target: string, attemptId: string, text: string): Promise<void> {
+    this.event(kind, text, { target, attempt: attemptId });
+  }
+
   async announced(attemptId: string): Promise<boolean> {
     return Boolean(this.attempt(attemptId)?.announcement);
   }

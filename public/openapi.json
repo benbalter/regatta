@@ -693,7 +693,8 @@
               "halt",
               "resume",
               "decision",
-              "land"
+              "land",
+              "cache"
             ]
           },
           "target": {

@@ -141,7 +141,7 @@ export const FeedEvent = z
   .object({
     id: z.number().int(),
     at: z.string(),
-    kind: z.enum(["sync", "launch", "announce", "conflict", "fix", "retry", "finish", "halt", "resume", "decision", "land"]),
+    kind: z.enum(["sync", "launch", "announce", "conflict", "fix", "retry", "finish", "halt", "resume", "decision", "land", "cache"]),
     target: z.string().nullable(),
     attempt: z.string().nullable(),
     text: z.string(),

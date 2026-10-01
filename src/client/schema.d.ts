@@ -309,7 +309,7 @@ export interface components {
             id: number;
             at: string;
             /** @enum {string} */
-            kind: "sync" | "launch" | "announce" | "conflict" | "fix" | "retry" | "finish" | "halt" | "resume" | "decision" | "land";
+            kind: "sync" | "launch" | "announce" | "conflict" | "fix" | "retry" | "finish" | "halt" | "resume" | "decision" | "land" | "cache";
             target: string | null;
             attempt: string | null;
             text: string;
