@@ -43,7 +43,7 @@ describe("validation", () => {
     expect(res.status).toBe(400);
   });
 
-  it("fails closed outside local dev when no admin token is configured", async () => {
+  it("fails closed outside local dev when neither an admin token nor Access is configured", async () => {
     const res = await app.request("/api/races", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(good) }, {} as Env);
     expect(res.status).toBe(503);
   });

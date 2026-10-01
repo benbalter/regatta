@@ -5,13 +5,13 @@
  */
 import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { MiddlewareHandler } from "hono";
-import { bearerAuth } from "hono/bearer-auth";
 import { HTTPException } from "hono/http-exception";
 import { repoHost } from "./repo-host";
 import * as S from "./schemas";
 import { why } from "./why";
+import { approverFor, authorize, type Auth } from "./auth";
 
-type AppEnv = { Bindings: Env };
+type AppEnv = { Bindings: Env; Variables: { auth: Auth } };
 
 // Validation failures use the same { error } envelope as every other error,
 // so clients handle one shape and never see raw Zod internals.
@@ -28,16 +28,17 @@ export const app = new OpenAPIHono<AppEnv>({
 app.openAPIRegistry.registerComponent("securitySchemes", "admin", {
   type: "http",
   scheme: "bearer",
-  description: "REGATTA_ADMIN_TOKEN. Required for anything that spends money or writes to repos.",
+  description:
+    "REGATTA_ADMIN_TOKEN, or a Cloudflare Access session (Cf-Access-Jwt-Assertion), which also records your verified identity as the approver. Required for anything that spends money or writes to repos.",
 });
 
-// One admin token guards writes. Fail closed: only local dev against the
-// fake Artifacts runs without one.
+// Writes need Cloudflare Access or the admin token; only local dev against
+// the fake Artifacts runs open. Fail closed. See src/auth.ts.
 export const requireAdmin: MiddlewareHandler<AppEnv> = async (c, next) => {
-  if (c.env.FAKE_ARTIFACTS_URL) return next();
-  if (!c.env.REGATTA_ADMIN_TOKEN) return c.json({ error: "REGATTA_ADMIN_TOKEN is not configured" }, 503);
-  const auth: MiddlewareHandler<AppEnv> = bearerAuth({ token: c.env.REGATTA_ADMIN_TOKEN });
-  return auth(c, next);
+  const auth = await authorize(c.env, c.req.raw);
+  if (!auth.ok) return c.json({ error: auth.error }, auth.status);
+  c.set("auth", auth);
+  return next();
 };
 
 const json = <T extends z.ZodType>(schema: T, description: string) => ({ description, content: { "application/json": { schema } } });
@@ -125,7 +126,7 @@ app.openapi(
     try {
       const landing = await c.env.Race.getByName(c.req.valid("param").id).approve(body.key, {
         overrides: body.overrides,
-        approvedBy: body.approvedBy?.trim() || "a human reviewer",
+        approvedBy: approverFor(c.get("auth"), body.approvedBy),
         dissentResponse: body.dissentResponse,
       });
       return c.json({ landing }, 200);
@@ -171,7 +172,8 @@ app.openapi(
   }),
   async (c) => {
     const { reason, by } = c.req.valid("json");
-    await c.env.Race.getByName(c.req.valid("param").id).halt({ by: by?.trim() || "a human", reason });
+    const who = approverFor(c.get("auth"), by);
+    await c.env.Race.getByName(c.req.valid("param").id).halt({ by: who === "a human reviewer" ? "a human" : who, reason });
     return c.json({ ok: true as const }, 200);
   },
 );
@@ -230,7 +232,7 @@ app.openapi(
       if (denied) return denied as never;
       return c.json(answer!, 200);
     } catch (e) {
-      if (e instanceof HTTPException) throw e; // bearerAuth's 401, not a lookup failure
+      if (e instanceof HTTPException) throw e;
       return c.json({ error: (e as Error).message }, 404);
     }
   },

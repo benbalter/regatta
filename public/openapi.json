@@ -42,7 +42,7 @@
       "admin": {
         "type": "http",
         "scheme": "bearer",
-        "description": "REGATTA_ADMIN_TOKEN. Required for anything that spends money or writes to repos."
+        "description": "REGATTA_ADMIN_TOKEN, or a Cloudflare Access session (Cf-Access-Jwt-Assertion), which also records your verified identity as the approver. Required for anything that spends money or writes to repos."
       }
     },
     "schemas": {

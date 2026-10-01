@@ -9,29 +9,19 @@ import { z } from "zod";
 import { repoHost } from "./repo-host";
 import { why } from "./why";
 import { summarize } from "./race-logic";
+import { approverFor, authorize, type Auth } from "./auth";
 
 type Ctx = { requestInfo?: Request };
 const text = (value: unknown) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] });
 const fail = (message: string) => ({ ...text(message), isError: true });
 
-// Writes need the admin token, except in local dev against the fake Artifacts.
-function canWrite(env: Env, req?: Request): boolean {
-  if (env.FAKE_ARTIFACTS_URL) return true;
-  const token = env.REGATTA_ADMIN_TOKEN;
-  const sent = req?.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
-  if (!token || sent.length !== token.length) return false;
-  // Constant-time comparison.
-  let diff = 0;
-  for (let i = 0; i < token.length; i++) diff |= token.charCodeAt(i) ^ sent.charCodeAt(i);
-  return diff === 0;
-}
-const DENIED = "This tool changes repos or spends money: send `Authorization: Bearer <REGATTA_ADMIN_TOKEN>`.";
+const DENIED = "This tool changes repos or spends money: sign in with Cloudflare Access or send `Authorization: Bearer <REGATTA_ADMIN_TOKEN>`.";
 
-function createServer(env: Env, ctx: Ctx) {
+function createServer(env: Env, ctx: Ctx, auth: Auth) {
   const server = new McpServer({ name: "regatta", version: "0.1.0" });
   const race = (id: string) => env.Race.getByName(id);
   const index = () => env.Race.getByName("_index");
-  const writable = canWrite(env, ctx.requestInfo);
+  const writable = auth.ok;
 
   server.registerTool(
     "list_races",
@@ -88,7 +78,7 @@ function createServer(env: Env, ctx: Ctx) {
     async ({ id, key, approved_by, dissent_response }) => {
       if (!writable) return fail(DENIED);
       try {
-        return text({ landing: await race(id).approve(key, { approvedBy: approved_by, dissentResponse: dissent_response }) });
+        return text({ landing: await race(id).approve(key, { approvedBy: approverFor(auth, approved_by), dissentResponse: dissent_response }) });
       } catch (e) {
         return fail((e as Error).message);
       }
@@ -139,6 +129,8 @@ function createServer(env: Env, ctx: Ctx) {
   return server;
 }
 
-export function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  return createMcpHandler((mcpCtx) => createServer(env, mcpCtx as Ctx))(request, env, ctx);
+export async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  // Authorize once per request; read tools stay open, write tools check `auth.ok`.
+  const auth = await authorize(env, request);
+  return createMcpHandler((mcpCtx) => createServer(env, mcpCtx as Ctx, auth))(request, env, ctx);
 }
