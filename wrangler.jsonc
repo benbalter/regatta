@@ -24,7 +24,8 @@
   ],
   "workflows": [
     { "name": "regatta-attempt", "binding": "ATTEMPT", "class_name": "AttemptWorkflow" },
-    { "name": "regatta-land", "binding": "LAND", "class_name": "LandWorkflow" }
+    { "name": "regatta-land", "binding": "LAND", "class_name": "LandWorkflow" },
+    { "name": "regatta-sync", "binding": "SYNC", "class_name": "SyncWorkflow" }
   ],
   "vars": {
     // "provider:model" per role. Local dev runs free on Ollama; production uses Claude via AI Gateway.
@@ -61,7 +62,8 @@
       ],
       "workflows": [
         { "name": "regatta-attempt", "binding": "ATTEMPT", "class_name": "AttemptWorkflow" },
-        { "name": "regatta-land", "binding": "LAND", "class_name": "LandWorkflow" }
+        { "name": "regatta-land", "binding": "LAND", "class_name": "LandWorkflow" },
+    { "name": "regatta-sync", "binding": "SYNC", "class_name": "SyncWorkflow" }
       ]
     }
   }

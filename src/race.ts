@@ -8,6 +8,7 @@ import type { AttemptParams, AttemptReport } from "./attempt";
 import { clusterOutcomes, defaultWinners, errorSignature, type Cluster } from "./cluster";
 import { DEFAULT_POLICY, evaluate, type Policy, type Verdict } from "./policy";
 import { repoHost } from "./repo-host";
+import type { SyncStatus } from "./sync";
 import { relaunchAfterHalt } from "./race-logic";
 
 export interface TargetSpec {
@@ -74,6 +75,8 @@ export interface RaceView {
   fixes: Fix[];
   approved: string[];
   halt: Halt | null;
+  /** Per-repo upstream sync before the race started. */
+  sync: Record<string, { status: SyncStatus | "syncing"; detail: string }>;
 }
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
@@ -129,9 +132,29 @@ export class Race extends DurableObject<Env> {
     const host = repoHost(this.env);
     for (const t of spec.targets) {
       const base = baseName(t);
-      if ((await host.info(base)).status === "missing") await host.importRepo(base, t.url, t.branch);
-      for (let n = 1; n <= spec.k; n++) await this.launch(t.name, base, `a${n}`, null, []);
+      const fresh = (await host.info(base)).status === "missing";
+      if (fresh) await host.importRepo(base, t.url, t.branch);
+      this.setSync(t.name, { status: "syncing", detail: "" });
+      await this.env.SYNC.create({
+        id: `${id}-sync-${slug(t.name)}`,
+        params: { raceId: id, target: t.name, base, url: t.url, branch: t.branch, fresh },
+      });
     }
+  }
+
+  /** A repo's base is current (or isn't); start its attempts only if it is. */
+  async synced(target: string, status: SyncStatus, detail: string): Promise<void> {
+    this.setSync(target, { status, detail });
+    if (status === "conflict" || status === "failed" || this.halted()) return;
+    const t = this.spec().targets.find((x) => x.name === target);
+    if (!t) return;
+    for (let n = 1; n <= this.spec().k; n++) await this.launch(t.name, baseName(t), `a${n}`, null, []);
+  }
+
+  private setSync(target: string, v: { status: SyncStatus | "syncing"; detail: string }) {
+    const all = JSON.parse(this.meta("sync") ?? "{}");
+    all[target] = v;
+    this.setMeta("sync", JSON.stringify(all));
   }
 
   private async launch(target: string, base: string, suffix: string, retryOf: string | null, hints: string[]) {
@@ -284,6 +307,7 @@ export class Race extends DurableObject<Env> {
       fixes: this.fixes(),
       approved: JSON.parse(this.meta("approved") ?? "[]"),
       halt: this.halted(),
+      sync: JSON.parse(this.meta("sync") ?? "{}"),
     };
   }
 

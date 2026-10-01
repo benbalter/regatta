@@ -10,6 +10,7 @@ export { Race } from "./race";
 export { Sandbox, Egress } from "./sandbox";
 export { AttemptWorkflow } from "./attempt";
 export { LandWorkflow } from "./land";
+export { SyncWorkflow } from "./sync";
 
 const app = new Hono<{ Bindings: Env }>();
 const index = (env: Env) => env.RACE.getByName("_index");
