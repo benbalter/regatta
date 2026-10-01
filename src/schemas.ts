@@ -59,6 +59,24 @@ export const AttemptReport = z
   })
   .openapi("AttemptReport");
 
+export const Announcement = z
+  .object({
+    plan: z.string().describe("What the agent intends to do in this repo, before it does it"),
+    paths: z.array(z.string()).describe("Files, directories or globs it expects to touch"),
+    at: z.string(),
+  })
+  .openapi("Announcement", { description: "Work loudly: an agent's plan, posted before its first edit." });
+
+export const ClaimConflict = z
+  .object({
+    race: z.string(),
+    attempt: z.string(),
+    paths: z.array(z.string()).describe("This attempt's claims that overlap the other race's"),
+    theirs: z.array(z.string()),
+    plan: z.string(),
+  })
+  .openapi("ClaimConflict", { description: "Another race has announced overlapping work in the same repo." });
+
 export const AttemptState = z.enum(["running", "done", "halted", "landing", "landed", "land-failed"]);
 
 export const Attempt = z
@@ -71,6 +89,8 @@ export const Attempt = z
     retryOf: z.string().nullable().describe("Set when this attempt is a coordinated retry or a relaunch"),
     hints: z.array(z.string()).describe("Fixes from other agents this attempt was seeded with"),
     report: AttemptReport.nullable(),
+    announcement: Announcement.nullable(),
+    undeclared: z.array(z.string()).describe("Changed files the announcement didn't cover"),
     landedSha: z.string().nullable(),
     landError: z.string().nullable(),
     createdAt: z.string(),
@@ -112,8 +132,20 @@ export const Cluster = z
     targets: z.array(z.string()),
     verdict: Verdict,
     winners: z.record(z.string(), z.string()).describe("Target → default winning attempt (smallest green diff)"),
+    conflicts: z.record(z.string(), z.array(ClaimConflict)).describe("Target → overlapping claims from other races in that repo"),
   })
   .openapi("Cluster", { description: "Attempts that ended the same way. Humans review once per cluster, not once per repo." });
+
+export const FeedEvent = z
+  .object({
+    id: z.number().int(),
+    at: z.string(),
+    kind: z.enum(["sync", "launch", "announce", "conflict", "fix", "retry", "finish", "halt", "resume", "land"]),
+    target: z.string().nullable(),
+    attempt: z.string().nullable(),
+    text: z.string(),
+  })
+  .openapi("FeedEvent", { description: "One line in the race's live feed." });
 
 export const SyncStatus = z.enum(["imported", "up-to-date", "fast-forwarded", "merged", "conflict", "failed"]);
 
@@ -127,6 +159,7 @@ export const RaceView = z
     fixes: z.array(Fix),
     approved: z.array(z.string()),
     halt: Halt.nullable(),
+    feed: z.array(FeedEvent).describe("Newest last; the most recent 300"),
     sync: z.record(z.string(), z.object({ status: z.union([SyncStatus, z.literal("syncing")]), detail: z.string() })),
   })
   .openapi("Race");
@@ -183,3 +216,6 @@ export type ClusterView = z.infer<typeof Cluster>;
 export type SyncStatus = z.infer<typeof SyncStatus>;
 export type RaceView = z.infer<typeof RaceView>;
 export type WhyAnswer = z.infer<typeof WhyAnswer>;
+export type Announcement = z.infer<typeof Announcement>;
+export type ClaimConflict = z.infer<typeof ClaimConflict>;
+export type FeedEvent = z.infer<typeof FeedEvent>;

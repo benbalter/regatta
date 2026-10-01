@@ -240,7 +240,19 @@ export class AttemptWorkflow extends WorkflowEntrypoint<Env, AttemptParams> {
         const c = await sandbox.readFile(input.path);
         return c === null ? done(`cannot read ${input.path}`, true) : done(c);
       }
+      case "announce": {
+        const { plan, paths } = call.input as { plan: string; paths: string[] };
+        const conflicts = await race.announce(p.attemptId, plan, paths);
+        return done(
+          conflicts.length
+            ? `Announced. Heads up: another race has claimed overlapping paths in this repo:\n${conflicts
+                .map((c) => `- race ${c.race} (${c.paths.join(", ")}): "${c.plan}"`)
+                .join("\n")}\nKeep your change narrow, or explain the overlap in your rationale.`
+            : "Announced. No other race has claimed these paths.",
+        );
+      }
       case "write_file": {
+        if (!(await race.announced(p.attemptId))) return done("Call announce with your plan and paths before changing files.", true);
         const r = await sandbox.writeFile(input.path, input.content);
         return r.exitCode === 0 ? done(`wrote ${input.path}`) : done(r.stderr, true);
       }

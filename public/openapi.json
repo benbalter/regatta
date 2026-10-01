@@ -197,6 +197,13 @@
           "halt": {
             "$ref": "#/components/schemas/Halt"
           },
+          "feed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FeedEvent"
+            },
+            "description": "Newest last; the most recent 300"
+          },
           "sync": {
             "type": "object",
             "additionalProperties": {
@@ -243,6 +250,7 @@
           "fixes",
           "approved",
           "halt",
+          "feed",
           "sync"
         ]
       },
@@ -289,6 +297,16 @@
           "report": {
             "$ref": "#/components/schemas/AttemptReport"
           },
+          "announcement": {
+            "$ref": "#/components/schemas/Announcement"
+          },
+          "undeclared": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Changed files the announcement didn't cover"
+          },
           "landedSha": {
             "type": [
               "string",
@@ -314,6 +332,8 @@
           "retryOf",
           "hints",
           "report",
+          "announcement",
+          "undeclared",
           "landedSha",
           "landError",
           "createdAt"
@@ -394,6 +414,34 @@
           "turns"
         ]
       },
+      "Announcement": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "plan": {
+            "type": "string",
+            "description": "What the agent intends to do in this repo, before it does it"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Files, directories or globs it expects to touch"
+          },
+          "at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan",
+          "paths",
+          "at"
+        ],
+        "description": "Work loudly: an agent's plan, posted before its first edit."
+      },
       "Cluster": {
         "type": "object",
         "properties": {
@@ -463,6 +511,16 @@
               "type": "string"
             },
             "description": "Target → default winning attempt (smallest green diff)"
+          },
+          "conflicts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ClaimConflict"
+              }
+            },
+            "description": "Target → overlapping claims from other races in that repo"
           }
         },
         "required": [
@@ -472,7 +530,8 @@
           "attempts",
           "targets",
           "verdict",
-          "winners"
+          "winners",
+          "conflicts"
         ],
         "description": "Attempts that ended the same way. Humans review once per cluster, not once per repo."
       },
@@ -498,6 +557,41 @@
           "decision",
           "reasons"
         ]
+      },
+      "ClaimConflict": {
+        "type": "object",
+        "properties": {
+          "race": {
+            "type": "string"
+          },
+          "attempt": {
+            "type": "string"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "This attempt's claims that overlap the other race's"
+          },
+          "theirs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "plan": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "race",
+          "attempt",
+          "paths",
+          "theirs",
+          "plan"
+        ],
+        "description": "Another race has announced overlapping work in the same repo."
       },
       "Fix": {
         "type": "object",
@@ -563,6 +657,56 @@
           "at"
         ],
         "description": "The andon cord: who stopped the line, and why."
+      },
+      "FeedEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "at": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "sync",
+              "launch",
+              "announce",
+              "conflict",
+              "fix",
+              "retry",
+              "finish",
+              "halt",
+              "resume",
+              "land"
+            ]
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attempt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "kind",
+          "target",
+          "attempt",
+          "text"
+        ],
+        "description": "One line in the race's live feed."
       },
       "ApproveRequest": {
         "type": "object",

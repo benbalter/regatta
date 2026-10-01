@@ -12,6 +12,21 @@ export const MAX_TURNS = 30;
 
 export const TOOLS: Anthropic.Tool[] = [
   {
+    name: "announce",
+    description:
+      "Work loudly: before your first change, post your plan and the paths you expect to touch (files, directories or globs). Other agents and other races working this repo see it, and you'll be told if another race has claimed overlapping paths. Call it again if your plan changes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        plan: { type: "string", description: "One or two sentences: what you will change and why" },
+        paths: { type: "array", items: { type: "string" }, description: "Paths you expect to touch, e.g. .github/workflows/ci.yml or lib/**" },
+      },
+      required: ["plan", "paths"],
+      additionalProperties: false,
+    },
+    strict: true,
+  },
+  {
     name: "run",
     description:
       "Run a shell command in the repository checkout (cwd is the repo root). Use it to explore, edit with sed or patch, install gems and run tests. Output is truncated to the last 20k characters.",
@@ -99,6 +114,7 @@ export function systemPrompt(check: string): string {
   return [
     "You are one of several agents running the same change across a fleet of repositories.",
     "Make the smallest change that satisfies the intent in this repository, matching its existing conventions.",
+    "Explore first, then call announce with your plan and the paths you'll touch before you change anything. Changes outside what you announced are flagged to reviewers.",
     `The repository's check command is \`${check}\`; use the check tool to run it. Leave the repository passing.`,
     "If a check fails, call ask_fleet with the key error line before debugging on your own.",
     "Do not commit or push; Regatta commits your working tree when you call finish.",

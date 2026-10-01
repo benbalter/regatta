@@ -166,6 +166,8 @@ export interface components {
             fixes: components["schemas"]["Fix"][];
             approved: string[];
             halt: components["schemas"]["Halt"];
+            /** @description Newest last; the most recent 300 */
+            feed: components["schemas"]["FeedEvent"][];
             sync: {
                 [key: string]: {
                     status: ("imported" | "up-to-date" | "fast-forwarded" | "merged" | "conflict" | "failed") | "syncing";
@@ -185,6 +187,9 @@ export interface components {
             /** @description Fixes from other agents this attempt was seeded with */
             hints: string[];
             report: components["schemas"]["AttemptReport"];
+            announcement: components["schemas"]["Announcement"];
+            /** @description Changed files the announcement didn't cover */
+            undeclared: string[];
             landedSha: string | null;
             landError: string | null;
             createdAt: string;
@@ -207,6 +212,14 @@ export interface components {
             /** @description Stopped because the andon cord was pulled */
             halted?: boolean;
         } | null;
+        /** @description Work loudly: an agent's plan, posted before its first edit. */
+        Announcement: {
+            /** @description What the agent intends to do in this repo, before it does it */
+            plan: string;
+            /** @description Files, directories or globs it expects to touch */
+            paths: string[];
+            at: string;
+        } | null;
         /** @description Attempts that ended the same way. Humans review once per cluster, not once per repo. */
         Cluster: {
             key: string;
@@ -227,11 +240,24 @@ export interface components {
             winners: {
                 [key: string]: string;
             };
+            /** @description Target → overlapping claims from other races in that repo */
+            conflicts: {
+                [key: string]: components["schemas"]["ClaimConflict"][];
+            };
         };
         Verdict: {
             /** @enum {string} */
             decision: "auto" | "review" | "blocked";
             reasons: string[];
+        };
+        /** @description Another race has announced overlapping work in the same repo. */
+        ClaimConflict: {
+            race: string;
+            attempt: string;
+            /** @description This attempt's claims that overlap the other race's */
+            paths: string[];
+            theirs: string[];
+            plan: string;
         };
         /** @description A blackboard entry: one agent's fix, offered to every agent that hits the same error. */
         Fix: {
@@ -252,6 +278,16 @@ export interface components {
             /** Format: date-time */
             at: string;
         } | null;
+        /** @description One line in the race's live feed. */
+        FeedEvent: {
+            id: number;
+            at: string;
+            /** @enum {string} */
+            kind: "sync" | "launch" | "announce" | "conflict" | "fix" | "retry" | "finish" | "halt" | "resume" | "land";
+            target: string | null;
+            attempt: string | null;
+            text: string;
+        };
         ApproveRequest: {
             /** @description Cluster key from the race view */
             key: string;

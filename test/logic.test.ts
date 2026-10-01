@@ -167,3 +167,45 @@ describe("review fixes", async () => {
     ]);
   });
 });
+
+describe("claims (work loudly)", async () => {
+  const { covers, claimsOverlap, overlapping, undeclared } = await import("../src/claims");
+
+  it("covers exact files, directories and globs", () => {
+    expect(covers(".github/workflows/ci.yml", ".github/workflows/ci.yml")).toBe(true);
+    expect(covers(".github/workflows", ".github/workflows/ci.yml")).toBe(true);
+    expect(covers(".github/workflows/", ".github/workflows/ci.yml")).toBe(true);
+    expect(covers("lib/**", "lib/jekyll/foo.rb")).toBe(true);
+    expect(covers("*.gemspec", "jekyll-foo.gemspec")).toBe(true);
+    expect(covers("lib", "library.rb")).toBe(false);
+  });
+
+  it("flags overlapping claims, including a file inside a claimed directory", () => {
+    expect(claimsOverlap(".github/workflows", ".github/workflows/ci.yml")).toBe(true);
+    expect(claimsOverlap("lib/**", "lib/foo.rb")).toBe(true);
+    expect(claimsOverlap("Gemfile", "Gemfile")).toBe(true);
+    expect(claimsOverlap("README.md", ".github/workflows/ci.yml")).toBe(false);
+    expect(claimsOverlap("lib/**", "spec/foo_spec.rb")).toBe(false);
+    expect(overlapping(["README.md", "lib/**"], ["lib/x.rb"])).toEqual(["lib/**"]);
+    expect(claimsOverlap("lib/**", "lib/*.rb")).toBe(true);
+    expect(claimsOverlap("lib/*.rb", "spec/*.rb")).toBe(false);
+    expect(claimsOverlap("*.gemspec", "lib/**")).toBe(false);
+    expect(claimsOverlap("*.gemspec", "jekyll-foo.gemspec")).toBe(true);
+    expect(claimsOverlap("**", "lib/x.rb")).toBe(true);
+  });
+
+  it("escalates auto clusters to review when another race claims the same paths", async () => {
+    const { escalateForConflicts } = await import("../src/claims");
+    const conflict = { race: "r2", attempt: "r2-a1", paths: [".ruby-version"], theirs: [".ruby-version"], plan: "pin ruby" };
+    expect(escalateForConflicts({ decision: "auto", reasons: ["green and within policy"] }, { foo: [conflict] })).toEqual({
+      decision: "review",
+      reasons: ["foo: race r2 also claims .ruby-version"],
+    });
+    expect(escalateForConflicts({ decision: "blocked", reasons: ["checks failing"] }, { foo: [conflict] }).decision).toBe("blocked");
+    expect(escalateForConflicts({ decision: "auto", reasons: ["ok"] }, {}).decision).toBe("auto");
+  });
+
+  it("finds changes the agent never announced", () => {
+    expect(undeclared([".ruby-version", "Gemfile.lock", "lib/a.rb"], [".ruby-version", "lib/"])).toEqual(["Gemfile.lock"]);
+  });
+});
