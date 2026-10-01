@@ -69,3 +69,8 @@ body {
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .rise { animation: rise 0.35s ease-out both; }
 @media (prefers-reduced-motion: reduce) { .rise { animation: none; } }
+
+/* Screenshots that match the page's color mode. */
+.shot-dark { display: none; }
+:root[data-mode="dark"] .shot-dark { display: block; }
+:root[data-mode="dark"] .shot-light { display: none; }

@@ -1,0 +1,113 @@
+---
+// The signature visual: a race replayed as you scroll. Four repos launch,
+// three hit the same error, one boat's fix goes on the blackboard, the stuck
+// boats relaunch seeded with it and go green, and everything folds into
+// outcome clusters. Plain CSS + a tiny IntersectionObserver; reduced motion
+// shows the finished race.
+const lanes = ["jekyll-relative-links", "jekyll-readme-index", "markdown-to-word-js", "comment-rollup"];
+const steps = [
+  { title: "Start", body: "One intent, four repos, two boats each. Every boat gets its own sandbox and its own fork." },
+  { title: "Same wall", body: "Three boats in three repos hit the same failing check. Each one announced its plan before touching anything." },
+  { title: "Fix it once", body: "One boat gets its check passing. A fresh sandbox reproduces it green, and the fix goes up on the blackboard." },
+  { title: "Teach the fleet", body: "The stuck boats relaunch, seeded with that fix, and go green. Nobody had to read three logs." },
+  { title: "Review outcomes", body: "Eight boats fold into three clusters. Green work within policy lands; one decision goes to a human, with a dissent to answer." },
+];
+---
+<section class="replay" aria-label="A race, replayed as you scroll">
+  <div class="replay-stage" aria-hidden="true">
+    <div class="course">
+      {lanes.map((lane, i) => (
+        <div class="lane" data-lane={i}>
+          <span class="lane-name">{lane}</span>
+          <span class="boat" data-boat={`${i}a`}></span>
+          <span class="boat" data-boat={`${i}b`}></span>
+        </div>
+      ))}
+    </div>
+    <div class="board">
+      <div class="board-title">The blackboard</div>
+      <div class="fix">✓ <b>markdown-to-word-js</b> fixed the shared failure · reproduced green in a fresh sandbox</div>
+    </div>
+    <div class="clusters">
+      <div class="cluster green">green · changed .nvmrc · <b>auto</b></div>
+      <div class="cluster yellow">green · changed .ruby-version · <b>review</b> + dissent</div>
+      <div class="cluster muted">green · no changes needed · <b>auto</b></div>
+    </div>
+    <p class="caption">Illustration of a race. Run the real one locally with the demo race.</p>
+  </div>
+  <ol class="replay-steps">
+    {steps.map((s, i) => (
+      <li class="replay-step" data-step={i}>
+        <div class="step-num">Leg {i + 1}</div>
+        <h3>{s.title}</h3>
+        <p>{s.body}</p>
+      </li>
+    ))}
+  </ol>
+</section>
+
+<script>
+  const stage = document.querySelector<HTMLElement>(".replay-stage");
+  const steps = document.querySelectorAll<HTMLElement>(".replay-step");
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (stage) {
+    if (reduce) stage.dataset.step = "4";
+    else {
+      const io = new IntersectionObserver(
+        (entries) => {
+          for (const e of entries) if (e.isIntersecting) stage.dataset.step = (e.target as HTMLElement).dataset.step;
+        },
+        { rootMargin: "-45% 0px -45% 0px" },
+      );
+      steps.forEach((s) => io.observe(s));
+    }
+  }
+</script>
+
+<style>
+  .replay { display: grid; gap: 2rem; grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 900px) { .replay { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); } }
+  .replay-stage {
+    position: sticky; top: 1.5rem; align-self: start;
+    border: 1px solid var(--rule); background: var(--card); border-radius: 0.75rem; padding: 1.25rem;
+  }
+  .course { display: grid; gap: 0.6rem; }
+  .lane {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 0.6rem; align-items: center;
+    border-bottom: 1px dashed var(--rule); padding-bottom: 0.6rem; font-family: var(--font-mono); font-size: 0.8rem;
+  }
+  .lane-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .boat { width: 1.6rem; height: 0.9rem; border-radius: 3px; background: var(--rule); transition: background 0.5s, transform 0.5s; }
+  .board, .clusters { margin-top: 1rem; transition: opacity 0.5s, transform 0.5s; opacity: 0; transform: translateY(6px); }
+  .board-title { font-family: var(--font-display); font-size: 1.1rem; }
+  .fix { margin-top: 0.4rem; font-size: 0.85rem; border: 1px solid var(--flag-green); border-radius: 0.5rem; padding: 0.5rem 0.7rem; }
+  .fix code { font-size: 0.75rem; }
+  .clusters { display: grid; gap: 0.5rem; }
+  .cluster { border-left: 4px solid var(--rule); background: var(--paper); border-radius: 0.4rem; padding: 0.5rem 0.75rem; font-size: 0.85rem; }
+  .cluster.green { border-left-color: var(--flag-green); }
+  .cluster.yellow { border-left-color: var(--flag-yellow); }
+  .cluster.muted { border-left-color: var(--muted); }
+
+  /* Leg 1: everyone sails. */
+  .replay-stage:not([data-step]) .boat, .replay-stage[data-step="0"] .boat { background: var(--flag-blue); }
+  /* Leg 2: three repos hit the same error. */
+  .replay-stage[data-step="1"] .boat { background: var(--flag-blue); }
+  .replay-stage[data-step="1"] [data-boat="0a"], .replay-stage[data-step="1"] [data-boat="1a"], .replay-stage[data-step="1"] [data-boat="2a"] { background: var(--flag-red); }
+  /* Leg 3: one fix, verified, on the blackboard. */
+  .replay-stage[data-step="2"] .boat { background: var(--flag-blue); }
+  .replay-stage[data-step="2"] [data-boat="0a"], .replay-stage[data-step="2"] [data-boat="1a"] { background: var(--flag-red); }
+  .replay-stage[data-step="2"] [data-boat="2a"] { background: var(--flag-green); transform: scale(1.15); }
+  .replay-stage[data-step="2"] .board, .replay-stage[data-step="3"] .board, .replay-stage[data-step="4"] .board { opacity: 1; transform: none; }
+  /* Leg 4 and 5: the fleet goes green, then folds into clusters. */
+  .replay-stage[data-step="3"] .boat, .replay-stage[data-step="4"] .boat { background: var(--flag-green); }
+  .replay-stage[data-step="4"] .clusters { opacity: 1; transform: none; }
+
+  .caption { margin-top: 1rem; font-size: 0.75rem; color: var(--muted); }
+  .replay-steps { list-style: none; padding: 0; margin: 0; }
+  .replay-step { min-height: 55vh; display: flex; flex-direction: column; justify-content: center; }
+  @media (max-width: 899px) { .replay-step { min-height: 40vh; } .replay-stage { top: 0.5rem; } }
+  .step-num { font-family: var(--font-mono); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.15em; color: var(--muted); }
+  .replay-step h3 { font-family: var(--font-display); font-size: 1.75rem; margin: 0.25rem 0 0.5rem; }
+  .replay-step p { color: var(--muted); max-width: 34ch; font-size: 1.05rem; }
+  @media (prefers-reduced-motion: reduce) { .boat, .board, .clusters { transition: none; } }
+</style>

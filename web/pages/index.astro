@@ -1,6 +1,20 @@
 ---
-import Dashboard from "../components/Dashboard";
+import RaceReplay from "../components/RaceReplay.astro";
 import "../styles/global.css";
+
+const repo = "https://github.com/benbalter/regatta";
+const stack = [
+  ["Artifacts", "Every boat works in its own fork; repos are versioned there, not on a laptop."],
+  ["Durable Objects + Agents SDK", "Each race is an agent: its state, blackboard and claims, synced live to every open dashboard."],
+  ["Workflows", "Each boat is a durable workflow. A crash replays from the last model turn."],
+  ["Containers", "Every sandbox is a fresh container with the internet off. Egress goes through a Worker."],
+  ["Workers AI", "A model from a different family writes the dissent."],
+  ["AI Gateway", "Claude for the agents, with keys stored in the gateway, never in code."],
+  ["R2", "A dependency cache per repo, written only by the repo's own setup."],
+  ["Queues", "Artifacts events wake a waiting boat the moment its fork is ready."],
+  ["Access", "When Access verifies who approved, that's the name on the merge."],
+  ["Astro + Kumo", "This site and the dashboard."],
+];
 ---
 <!doctype html>
 <html lang="en">
@@ -8,10 +22,8 @@ import "../styles/global.css";
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Regatta</title>
-    <meta
-      name="description"
-      content="Races, not pull requests: one intent across many repos as competing agent forks that share fixes, reviewed once per outcome cluster."
-    />
+    <meta name="description" content="Races, not pull requests. Agents race one intent across every repo, share what they learn, and bring you decisions instead of diffs." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -19,27 +31,162 @@ import "../styles/global.css";
       rel="stylesheet"
     />
     <script is:inline>
-      // Resolve the color mode before first paint (no flash). The preference is
-      // auto | light | dark; data-mode is always light or dark, which is what
-      // Kumo's components and Regatta's tokens both key on.
+      // Same color-mode resolution as the dashboard (data-mode drives the tokens).
       (() => {
         let pref = "auto";
         try { pref = localStorage.getItem("regatta-theme") || "auto"; } catch {}
         const dark = matchMedia("(prefers-color-scheme: dark)");
         const apply = () => {
-          const p = document.documentElement.dataset.pref || pref;
-          document.documentElement.dataset.mode = p === "auto" ? (dark.matches ? "dark" : "light") : p;
+          document.documentElement.dataset.mode = pref === "auto" ? (dark.matches ? "dark" : "light") : pref;
         };
-        document.documentElement.dataset.pref = pref;
         apply();
         dark.addEventListener("change", apply);
       })();
     </script>
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
   <body class="min-h-screen font-sans antialiased">
-    <main class="mx-auto max-w-[1400px] px-4 py-6 sm:px-6">
-      <Dashboard client:only="react" />
+    <header class="mx-auto flex max-w-[1200px] items-center justify-between px-4 py-6 sm:px-6">
+      <a href="/" class="font-display text-2xl font-extrabold italic">Regatta</a>
+      <nav class="flex items-center gap-5 text-sm">
+        <a href="#how" class="hover:underline">How a race works</a>
+        <a href="#trust" class="hover:underline">Trust</a>
+        <a href={repo} class="hover:underline">Code</a>
+        <a href="/app/" class="rounded-lg bg-[var(--brand)] px-3.5 py-2 font-semibold text-white">Open the dashboard</a>
+      </nav>
+    </header>
+
+    <main class="mx-auto max-w-[1200px] px-4 sm:px-6">
+      <!-- Hero -->
+      <section class="rise grid items-center gap-10 py-14 lg:grid-cols-[1fr_1.1fr] lg:py-20">
+        <div>
+          <div class="font-mono text-xs uppercase tracking-[0.2em] text-muted">A race committee for coding agents</div>
+          <h1 class="mt-4 font-display text-6xl font-extrabold leading-[0.95] tracking-tight md:text-7xl">Races, not pull&nbsp;requests.</h1>
+          <p class="mt-6 max-w-xl text-xl leading-relaxed">
+            Give Regatta one intent. Agents race it across every repo, share what they learn, and bring you decisions instead of diffs.
+          </p>
+          <div class="mt-8 flex flex-wrap gap-3">
+            <a href="#how" class="rounded-lg bg-[var(--brand)] px-5 py-3 font-semibold text-white">Watch a race</a>
+            <a href={repo} class="rounded-lg border border-rule px-5 py-3 font-semibold hover:border-ink">Read the code</a>
+          </div>
+        </div>
+        <!-- Follows the page's data-mode (not just the OS), like the rest of the theme. -->
+        <div class="overflow-hidden rounded-xl border border-rule shadow-sm">
+          <img class="shot-light" src="/images/race-light.png" alt="The Regatta dashboard: a race across Ruby and TypeScript repos, all green, with a live race log" width="1440" height="907" />
+          <img class="shot-dark" src="/images/race-dark.png" alt="" aria-hidden="true" width="1440" height="907" />
+        </div>
+      </section>
+
+      <!-- The problem -->
+      <section class="grid gap-8 border-t border-rule py-16 md:grid-cols-[1fr_2fr]">
+        <h2 class="font-display text-3xl">The problem</h2>
+        <div class="space-y-5 text-lg leading-relaxed">
+          <p>
+            Agents made changes cheap. Review didn't get cheaper. Point an agent at forty repos and you get forty pull requests, each reviewed as if it were the only one.
+          </p>
+          <p>That's GitHub as it exists today, with agents added on top. Regatta starts from the other end: the scarce thing is a person's attention, so spend it only where the repos disagree.</p>
+        </div>
+      </section>
+
+      <!-- How a race works -->
+      <section id="how" class="border-t border-rule py-16">
+        <h2 class="font-display text-3xl">How a race works</h2>
+        <p class="mt-3 max-w-2xl text-lg text-muted">Scroll to sail the course.</p>
+        <div class="mt-10"><RaceReplay /></div>
+      </section>
+
+      <!-- Three ideas -->
+      <section class="border-t border-rule py-16">
+        <h2 class="font-display text-3xl">Three ideas, and a cord anyone can pull</h2>
+        <div class="mt-10 grid gap-5 md:grid-cols-2">
+          <article class="rounded-xl border border-rule border-l-4 border-l-[var(--flag-green)] bg-card p-6">
+            <h3 class="font-display text-2xl">Fix it once</h3>
+            <p class="mt-3 leading-relaxed">When one boat solves an error, every boat stuck on the same error retries with that fix. A fix only spreads after a fresh sandbox reproduces it green.</p>
+          </article>
+          <article class="rounded-xl border border-rule border-l-4 border-l-[var(--flag-blue)] bg-card p-6">
+            <h3 class="font-display text-2xl">Review the outcome, not the changeset</h3>
+            <p class="mt-3 leading-relaxed">Every boat's result collapses into a few outcome clusters. Green work within policy lands without a click. You review once per cluster, not once per repo.</p>
+          </article>
+          <article class="rounded-xl border border-rule border-l-4 border-l-[var(--flag-yellow)] bg-card p-6">
+            <h3 class="font-display text-2xl">Humans decide, on the record</h3>
+            <p class="mt-3 leading-relaxed">
+              An escalation arrives as a one-page decision doc. A model from a different family argues against the recommendation, and approval waits until you answer it. <code class="font-mono text-sm">why</code> on any landed line returns the reasoning, the approver and their answer.
+            </p>
+          </article>
+          <article class="rounded-xl border border-rule border-l-4 border-l-[var(--flag-red)] bg-card p-6">
+            <h3 class="font-display text-2xl">The andon cord</h3>
+            <p class="mt-3 leading-relaxed">Anyone can stop the line, agents included. An agent stops its own repo; a person can stop the race. The reason goes on the record, and resuming relaunches what stopped.</p>
+          </article>
+        </div>
+      </section>
+
+      <!-- Honest comparison -->
+      <section class="grid gap-8 border-t border-rule py-16 md:grid-cols-[1fr_2fr]">
+        <h2 class="font-display text-3xl">The closest thing to it</h2>
+        <div class="space-y-5 text-lg leading-relaxed">
+          <p>
+            <a class="underline" href="https://sourcegraph.com/blog/agentic-batch-changes-public-beta">Sourcegraph's Agentic Batch Changes</a> is the closest thing to Regatta, and it's good: one prompt, many repos, CI iteration, at scale. Its changesets are reviewed one per repo. Regatta takes the other bet: boats share fixes across repos, and you review outcomes.
+          </p>
+          <p class="text-muted">
+            Credit where due: <a class="underline" href="https://dev.to/maledadams/i-kept-losing-the-why-behind-ai-written-code-so-i-built-git-why-51f7">git-why</a> and <a class="underline" href="https://arxiv.org/html/2603.15566">Lore</a> put agent reasoning in commit trailers. Regatta also records the decision: who approved it, and what dissent they answered.
+          </p>
+        </div>
+      </section>
+
+      <!-- Trust -->
+      <section id="trust" class="border-t border-rule py-16">
+        <h2 class="font-display text-3xl">Every repo and every agent is untrusted</h2>
+        <div class="mt-8 grid gap-8 lg:grid-cols-2">
+          <div class="space-y-4 text-lg leading-relaxed">
+            <p>Each sandbox is a fresh container with the internet off. Requests leave through a Worker that decides what's allowed and adds credentials on the way out. No container ever holds a credential.</p>
+            <p>The agent never grades its own work. It hands over a patch. A git-only sandbox commits and pushes it; a fresh sandbox runs the check; only that result counts.</p>
+          </div>
+          <ul class="space-y-3 text-base">
+            <li class="rounded-lg border border-rule bg-card p-4"><b>No write token</b> ever exists where repo or agent code runs.</li>
+            <li class="rounded-lg border border-rule bg-card p-4"><b>Registries are read-only.</b> Nothing can be published from a sandbox.</li>
+            <li class="rounded-lg border border-rule bg-card p-4"><b>The dependency cache</b> is per repo, written only by the repo's own setup.</li>
+            <li class="rounded-lg border border-rule bg-card p-4"><b>Agent text is fenced as data</b> in every prompt, including the decision doc you approve.</li>
+            <li class="rounded-lg border border-rule bg-card p-4"><b>Writes fail closed,</b> and trailers can't be forged by a commit message.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- Built on Cloudflare -->
+      <section class="border-t border-rule py-16">
+        <h2 class="font-display text-3xl">Built on Cloudflare, top to bottom</h2>
+        <p class="mt-3 max-w-2xl text-lg text-muted">Any language: the sandbox installs whatever toolchain a repo pins, and each repo brings its own setup and check.</p>
+        <dl class="mt-10 grid gap-x-10 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
+          {stack.map(([name, what]) => (
+            <div class="border-t-2 border-ink pt-3">
+              <dt class="font-mono text-sm font-medium uppercase tracking-wider">{name}</dt>
+              <dd class="mt-1.5 text-muted">{what}</dd>
+            </div>
+          ))}
+        </dl>
+        <p class="mt-8 text-muted">Agents can drive Regatta too, over MCP. The API is one OpenAPI contract.</p>
+      </section>
+
+      <!-- Lineage -->
+      <section class="grid gap-8 border-t border-rule py-16 md:grid-cols-[1fr_2fr]">
+        <h2 class="font-display text-3xl">Where the ideas come from</h2>
+        <p class="text-lg leading-relaxed">
+          Regatta is <a class="underline" href="https://open-and-async.com"><i>Open and Async</i></a> applied to agents: work loudly, write down the why, make decisions in writing, and let anyone stop the line. Those habits made distributed teams of people work. They turn out to matter more when most of the team is agents.
+        </p>
+      </section>
+
+      <!-- CTA -->
+      <section class="my-16 rounded-2xl border border-rule bg-card px-6 py-12 text-center">
+        <h2 class="font-display text-4xl">Run a race</h2>
+        <p class="mx-auto mt-4 max-w-xl text-lg text-muted">MIT licensed. It runs end to end on your machine, with local models and a bundled Artifacts stand-in, before you spend a cent.</p>
+        <div class="mt-8 flex flex-wrap justify-center gap-3">
+          <a href={repo} class="rounded-lg bg-[var(--brand)] px-5 py-3 font-semibold text-white">Get the code</a>
+          <a href="/app/" class="rounded-lg border border-rule px-5 py-3 font-semibold hover:border-ink">Open the dashboard</a>
+        </div>
+      </section>
     </main>
+
+    <footer class="mx-auto max-w-[1200px] border-t border-rule px-4 py-8 text-sm text-muted sm:px-6">
+      Regatta is an entry in Cloudflare's <a class="underline" href="https://blog.cloudflare.com/next-git-platform-on-cloudflare/">build the next Git platform</a> competition. Built by
+      <a class="underline" href="https://ben.balter.com">Ben Balter</a>.
+    </footer>
   </body>
 </html>
