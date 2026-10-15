@@ -2,7 +2,7 @@
 
 **Races, not pull requests.** Give Regatta one intent and a list of repos. Coding agents race it across every repo, share what they learn, and bring you decisions instead of diffs.
 
-Regatta is an entry in Cloudflare's [build the next Git platform](https://blog.cloudflare.com/next-git-platform-on-cloudflare/) competition. It's built entirely on Cloudflare: Workers, Durable Objects, Workflows, Containers, Artifacts, the Agents SDK, Workers AI, AI Gateway, R2, Queues, Access and Astro.
+~~Regatta is an entry in Cloudflare's [build the next Git platform](https://blog.cloudflare.com/next-git-platform-on-cloudflare/) competition.~~ It's built entirely on Cloudflare: Workers, Durable Objects, Workflows, Containers, Artifacts, the Agents SDK, Workers AI, AI Gateway, R2, Queues, Access and Astro.
 
 ![A race across two Ruby gems and two TypeScript packages: four repos, one boat each, all green, with a live race log](public/images/race-light.png)
 
