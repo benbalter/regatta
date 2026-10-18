@@ -62,5 +62,11 @@
     "workerd@1.20260815.1": true,
     "workerd@1.20260930.2": true,
     "esbuild@0.28.2": true
+  },
+  "overrides": {
+    "miniflare": {
+      "undici": "^7.29.1",
+      "sharp": "^0.35.5"
+    }
   }
 }
